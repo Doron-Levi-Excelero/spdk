@@ -78,6 +78,7 @@ enum blob_clear_method {
 	BLOB_CLEAR_WITH_WRITE_ZEROES,
 };
 
+//AK: TODO - not a major issue, but why are the order of values different than that of blob_clear_method?
 enum bs_clear_method {
 	BS_CLEAR_WITH_UNMAP,
 	BS_CLEAR_WITH_WRITE_ZEROES,
@@ -88,6 +89,53 @@ struct spdk_blob_store;
 struct spdk_io_channel;
 struct spdk_blob;
 struct spdk_xattr_names;
+
+struct nvidia_md_dev_context {
+	char 					*md_dev_name;
+	char 					*data_dev_name;
+
+	struct spdk_bdev 		*md_bdev;
+	struct spdk_blob_store 	*md_bs;
+	struct spdk_bdev_desc 	*md_bdev_desc;
+	struct spdk_io_channel 	*md_bdev_io_channel;
+	char 					*md_buff;
+	
+	struct spdk_bs_dev 		*md_bs_dev;
+	uint64_t 				md_io_unit_size;
+	spdk_blob_id 			md_blobid;
+	struct spdk_blob 		*md_blob;
+
+	//AK: TODO - adopted from hello_context_t *hello_context, some fields might be redundant
+	struct spdk_blob_store *data_bs;
+	struct spdk_blob *data_blob;
+	spdk_blob_id data_blobid;
+	struct spdk_io_channel *data_channel;
+	uint8_t *data_read_buff;
+	uint8_t *data_write_buff;
+	uint64_t data_io_unit_size;
+	int data_rc;
+
+	//AK: TODO - might be redundant
+	//struct spdk_bdev_io_wait_entry bdev_io_wait;
+};
+
+/**
+ * Check if the blob has it's metadata on another bdev
+ *
+ * \param blob Blob struct to query.
+ *
+ * \return Return true iff this is a datablob on a different device than it's metadata
+ */
+bool spdk_blob_has_dedicated_md_dev(struct spdk_blob *blob);
+
+/**
+ * Get the blob's metadata blob
+ *
+ * \param blob Blob struct to query.
+ *
+ * \return Returns the input blob or it's dedicated metadata blob if one exists
+ */
+struct spdk_blob* spdk_blob_get_md_blob(struct spdk_blob *blob);
 
 /**
  * Blobstore operation completion callback.
@@ -194,6 +242,10 @@ struct spdk_bs_dev {
 
 	struct spdk_bdev *(*get_base_bdev)(struct spdk_bs_dev *dev);
 
+	//AK: TODO - remove
+	//AK: TODO - get md_bdev if or NULL if none is existant
+	//struct spdk_bdev *(*get_md_bdev)(struct spdk_bs_dev *dev);
+
 	uint64_t	blockcnt;
 	uint32_t	blocklen; /* In bytes */
 };
@@ -268,6 +320,22 @@ void spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts,
  */
 void spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts,
 		  spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
+
+
+struct spdk_bdev_desc;
+/**
+ * Initialize a blobstore on the given device.
+ *
+ * \param dev Blobstore block device.
+ * \param md_dev If set, enables separation of blobstore meta data (MD) and actual data to two different block devices
+ * \param read_only_dev //AK: TODO - document
+ * \param o The structure which contains the option values for the blobstore.
+ * \param cb_fn Called when the initialization is complete.
+ * \param cb_arg Argument passed to function cb_fn.
+ */
+void
+spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct nvidia_md_dev_context *md_dev, struct spdk_bdev_desc *read_only_dev, struct spdk_bs_opts *o,
+	     spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
 
 typedef void (*spdk_bs_dump_print_xattr)(FILE *fp, const char *bstype, const char *name,
 		const void *value, size_t value_length);

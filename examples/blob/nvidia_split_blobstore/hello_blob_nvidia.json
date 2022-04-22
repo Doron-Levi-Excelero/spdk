@@ -1,0 +1,30 @@
+{
+  "subsystems": [
+    {
+      "subsystem": "bdev",
+      "config": [
+        {
+          "method": "bdev_malloc_create",
+          "params": {
+            "name": "Malloc0_MD",
+            "num_blocks": 2816,
+            "block_size": 4096
+          }
+        }
+      ]
+    },
+	{
+      "subsystem": "bdev",
+      "config": [
+        {
+          "method": "bdev_malloc_create",
+          "params": {
+            "name": "Malloc0_Data",
+            "num_blocks": 32768,
+            "block_size": 4096
+          }
+        }
+      ]
+    }
+  ]
+}

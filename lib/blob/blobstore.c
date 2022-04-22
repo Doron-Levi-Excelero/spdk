@@ -52,6 +52,16 @@
 
 #define BLOB_CRC32C_INITIAL    0xffffffffUL
 
+//AK: Added NVIDIA functions
+bool spdk_blob_has_dedicated_md_dev(struct spdk_blob *blob)
+{
+	return (NULL != blob->bs->md_dev_ctx);
+}
+struct spdk_blob* spdk_blob_get_md_blob(struct spdk_blob *blob)
+{
+	return spdk_blob_has_dedicated_md_dev(blob)?blob->bs->md_dev_ctx->md_blob:blob;
+}
+
 static int bs_register_md_thread(struct spdk_blob_store *bs);
 static int bs_unregister_md_thread(struct spdk_blob_store *bs);
 static void blob_close_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno);
@@ -1560,6 +1570,51 @@ blob_load_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 	}
 }
 
+
+static void
+read_md_page_complete(void *arg1, int bserrno)
+{
+	struct nvidia_md_dev_context *md_ctx  = arg1;
+	int match_res = -1;
+
+	SPDK_NOTICELOG("entry\n");
+	if (bserrno) {
+		unload_bs(md_ctx, "Error in read completion",
+			  bserrno);
+		return;
+	}
+
+	/* Now let's make sure things match. */
+	match_res = memcmp(md_ctx->data_write_buff, md_ctx->data_read_buff,
+			   md_ctx->data_io_unit_size);
+	if (match_res) {
+		unload_bs(md_ctx, "Error in data compare", -1);
+		return;
+	} else {
+		SPDK_NOTICELOG("read SUCCESS and data matches!\n");
+	}
+
+	/* Now let's close it and delete the blob in the callback. */
+	spdk_blob_close(md_ctx->data_blob, delete_blob, md_ctx);
+}
+
+/*
+ * Function for reading a blob.
+ */
+static void
+read_md_page(struct nvidia_md_dev_context *md_dev_ctx, 
+			spdk_bs_sequence_t *seq, void *payload,
+		     uint64_t lba, uint32_t lba_count,
+		     spdk_bs_sequence_cpl cb_fn, void *cb_arg)
+{
+	SPDK_NOTICELOG("entry\n");
+
+	/* Issue the read and compare the results in the callback. */
+	spdk_blob_io_read(md_ctx->md_blob, md_ctx->md_bs->md_channel,
+			  payload, lba, 1, read_md_page_complete,
+			  md_dev_ctx);
+}
+
 /* Load a blob from disk given a blobid */
 static void
 blob_load(spdk_bs_sequence_t *seq, struct spdk_blob *blob,
@@ -1580,26 +1635,34 @@ blob_load(spdk_bs_sequence_t *seq, struct spdk_blob *blob,
 		return;
 	}
 
-	ctx->blob = blob;
-	ctx->pages = spdk_realloc(ctx->pages, SPDK_BS_PAGE_SIZE, 0);
-	if (!ctx->pages) {
-		free(ctx);
-		cb_fn(seq, cb_arg, -ENOMEM);
-		return;
+	if(bs->md_dev_ctx) {
+		//AK: The blob being opened is on a data_bs
+		SPDK_NOTICELOG("Opening blob %" PRIu64 ", on data bs\n ", blobid);
+		//AK: TODO - we need to read the md blob at the correct offset
+		//It's just page_num (as no need to account for offset from the md)
 	}
-	ctx->num_pages = 1;
-	ctx->cb_fn = cb_fn;
-	ctx->cb_arg = cb_arg;
-	ctx->seq = seq;
+	else {		
+		SPDK_NOTICELOG("Opening blob %" PRIu64 ", on md bs\n ", blobid);
+		ctx->blob = blob;
+		ctx->pages = spdk_realloc(ctx->pages, SPDK_BS_PAGE_SIZE, 0);
+		if (!ctx->pages) {
+			free(ctx);
+			cb_fn(seq, cb_arg, -ENOMEM);
+			return;
+		}
+		ctx->num_pages = 1;
+		ctx->cb_fn = cb_fn;
+		ctx->cb_arg = cb_arg;
+		ctx->seq = seq;
 
-	page_num = bs_blobid_to_page(blob->id);
-	lba = bs_md_page_to_lba(blob->bs, page_num);
+		page_num = bs_blobid_to_page(blob->id);
+		lba = bs_md_page_to_lba(blob->bs, page_num);
 
-	blob->state = SPDK_BLOB_STATE_LOADING;
-
-	bs_sequence_read_dev(seq, &ctx->pages[0], lba,
+		blob->state = SPDK_BLOB_STATE_LOADING;
+		bs_sequence_read_dev(seq, &ctx->pages[0], lba,
 			     bs_byte_to_lba(bs, SPDK_BS_PAGE_SIZE),
 			     blob_load_cpl, ctx);
+	}
 }
 
 struct spdk_blob_persist_ctx {
@@ -2280,6 +2343,7 @@ blob_persist_check_dirty(struct spdk_blob_persist_ctx *ctx)
 			return;
 		}
 
+		//AK: TODO - this just reads into the superblock (should be on the md_dev)
 		bs_sequence_read_dev(ctx->seq, ctx->super, bs_page_to_lba(ctx->blob->bs, 0),
 				     bs_byte_to_lba(ctx->blob->bs, sizeof(*ctx->super)),
 				     blob_persist_dirty, ctx);
@@ -2294,6 +2358,10 @@ blob_persist(spdk_bs_sequence_t *seq, struct spdk_blob *blob,
 	     spdk_bs_sequence_cpl cb_fn, void *cb_arg)
 {
 	struct spdk_blob_persist_ctx *ctx;
+	
+	//Handle syncs using the md blob (if one is found)
+	struct spdk_blob *original_blob = blob;
+	blob = spdk_blob_get_md_blob(blob);
 
 	blob_verify_md_op(blob);
 
@@ -3278,6 +3346,7 @@ bs_free(struct spdk_blob_store *bs)
 	spdk_io_device_unregister(bs, bs_dev_destroy);
 }
 
+//AK: TODO - init bs creation options
 void
 spdk_bs_opts_init(struct spdk_bs_opts *opts, size_t opts_size)
 {
@@ -3368,7 +3437,7 @@ struct spdk_bs_load_ctx {
 };
 
 static int
-bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts, struct spdk_blob_store **_bs,
+bs_alloc(struct spdk_bs_dev *dev, struct nvidia_md_dev_context *md_dev_ctx, struct spdk_bdev_desc *read_only_dev, struct spdk_bs_opts *opts, struct spdk_blob_store **_bs,
 	 struct spdk_bs_load_ctx **_ctx)
 {
 	struct spdk_blob_store	*bs;
@@ -3419,6 +3488,12 @@ bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts, struct spdk_blob_st
 	bs->md_thread = spdk_get_thread();
 	assert(bs->md_thread != NULL);
 
+	//NVIDIA
+	//AK: Set pointers to devices either way.
+	bs->md_dev_ctx		= md_dev_ctx;
+	bs->read_only_dev 	= read_only_dev;
+	//NVIDIA end
+
 	/*
 	 * Do not use bs_lba_to_cluster() here since blockcnt may not be an
 	 *  even multiple of the cluster size.
@@ -3444,8 +3519,10 @@ bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts, struct spdk_blob_st
 	bs->super_blob = SPDK_BLOBID_INVALID;
 	memcpy(&bs->bstype, &opts->bstype, sizeof(opts->bstype));
 
+	//AK: TODO - this assumption is correct, but need to make sure how it comes into play later (since these pages are on another device)
 	/* The metadata is assumed to be at least 1 page */
 	bs->used_md_pages = spdk_bit_array_create(1);
+
 	bs->used_blobids = spdk_bit_array_create(0);
 	bs->open_blobids = spdk_bit_array_create(0);
 
@@ -4522,6 +4599,7 @@ bs_opts_copy(struct spdk_bs_opts *src, struct spdk_bs_opts *dst)
 	return 0;
 }
 
+//AK: TODO - We'll also have to handle loading from a device
 void
 spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 	     spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
@@ -4554,7 +4632,7 @@ spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 		return;
 	}
 
-	err = bs_alloc(dev, &opts, &bs, &ctx);
+	err = bs_alloc(dev, NULL, NULL, &opts, &bs, &ctx);
 	if (err) {
 		dev->destroy(dev);
 		cb_fn(cb_arg, NULL, err);
@@ -4917,6 +4995,7 @@ bs_dump_super_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 	bs_load_read_used_pages(ctx);
 }
 
+//AK: TODO - we'll have to handle this case as well
 void
 spdk_bs_dump(struct spdk_bs_dev *dev, FILE *fp, spdk_bs_dump_print_xattr print_xattr_fn,
 	     spdk_bs_op_complete cb_fn, void *cb_arg)
@@ -4931,7 +5010,7 @@ spdk_bs_dump(struct spdk_bs_dev *dev, FILE *fp, spdk_bs_dump_print_xattr print_x
 
 	spdk_bs_opts_init(&opts, sizeof(opts));
 
-	err = bs_alloc(dev, &opts, &bs, &ctx);
+	err = bs_alloc(dev, NULL, NULL, &opts, &bs, &ctx);
 	if (err) {
 		dev->destroy(dev);
 		cb_fn(cb_arg, err);
@@ -5028,7 +5107,7 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 		return;
 	}
 
-	rc = bs_alloc(dev, &opts, &bs, &ctx);
+	rc = bs_alloc(dev, NULL, NULL, &opts, &bs, &ctx);
 	if (rc) {
 		dev->destroy(dev);
 		cb_fn(cb_arg, NULL, rc);
@@ -5184,6 +5263,233 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 	}
 
 	bs_batch_close(batch);
+}
+
+//AK: TODO - this is where the actual init of bs happens, when there's MD involved
+//AK: struct md_dev/read_only_dev should be initialized by caller so that the logic is done differently than with MD + Data on the same device
+void
+spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct nvidia_md_dev_context *md_dev_desc, struct spdk_bdev_desc *read_only_dev_desc, struct spdk_bs_opts *o,
+	     spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	struct spdk_bs_load_ctx *ctx;
+	struct spdk_blob_store	*bs;
+	struct spdk_bs_cpl	cpl;
+	spdk_bs_sequence_t	*seq;
+	spdk_bs_batch_t		*batch;
+	uint64_t		num_md_lba;
+	uint64_t		num_md_pages;
+	uint64_t		num_md_clusters;
+	uint32_t		i;
+	struct spdk_bs_opts	opts = {};
+	int			rc;
+	uint64_t		lba, lba_count;
+
+	SPDK_DEBUGLOG(blob, "Initializing blobstore on dev %p\n", dev);
+
+	//AK: TODO - in case the caller didn't supply an md_dev, use the standard logic
+	if(!md_dev_desc){
+		return spdk_bs_init(dev, o, cb_fn, cb_arg);
+	}
+
+	//AK: TODO - need to add assertions that the md_dev was initialized correctly
+
+	//AK: from now on, when cb_fn is executed in case of error code, the caller should handle destroying md_dev/read_only_dev
+
+	if ((SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) {
+		SPDK_ERRLOG("unsupported dev block length of %d\n",
+			    dev->blocklen);
+		dev->destroy(dev);
+		cb_fn(cb_arg, NULL, -EINVAL);
+		return;
+	}
+
+	spdk_bs_opts_init(&opts, sizeof(opts));
+	if (o) {
+		if (bs_opts_copy(o, &opts)) {
+			return;
+		}
+	}
+
+	//AK: TODO - when handling requests, need to consider
+	//AK: opts->num_md_pages == 0 || opts->max_md_ops == 0 etc. (might be ok, but make sure)
+	if (bs_opts_verify(&opts) != 0) {
+		dev->destroy(dev);
+		cb_fn(cb_arg, NULL, -EINVAL);
+		return;
+	}
+
+	//AK: TODO - &bs->used_md_pages is set, need to make sure it's later used correctly
+	rc = bs_alloc(dev, md_dev_desc, read_only_dev_desc, &opts, &bs, &ctx);
+	if (rc) {
+		dev->destroy(dev);
+		cb_fn(cb_arg, NULL, rc);
+		return;
+	}
+
+	if (opts.num_md_pages == SPDK_BLOB_OPTS_NUM_MD_PAGES) {
+		/* By default, allocate 1 page per cluster.
+		 * Technically, this over-allocates metadata
+		 * because more metadata will reduce the number
+		 * of usable clusters. This can be addressed with
+		 * more complex math in the future.
+		 */
+		bs->md_len = bs->total_clusters;
+	} else {
+		bs->md_len = opts.num_md_pages;
+	}
+
+	rc = spdk_bit_array_resize(&bs->used_md_pages, bs->md_len);
+	if (rc < 0) {
+		spdk_free(ctx->super);
+		free(ctx);
+		bs_free(bs);
+		cb_fn(cb_arg, NULL, -ENOMEM);
+		return;
+	}
+
+	rc = spdk_bit_array_resize(&bs->used_blobids, bs->md_len);
+	if (rc < 0) {
+		spdk_free(ctx->super);
+		free(ctx);
+		bs_free(bs);
+		cb_fn(cb_arg, NULL, -ENOMEM);
+		return;
+	}
+
+	rc = spdk_bit_array_resize(&bs->open_blobids, bs->md_len);
+	if (rc < 0) {
+		spdk_free(ctx->super);
+		free(ctx);
+		bs_free(bs);
+		cb_fn(cb_arg, NULL, -ENOMEM);
+		return;
+	}
+
+	memcpy(ctx->super->signature, SPDK_BS_SUPER_BLOCK_SIG,
+	       sizeof(ctx->super->signature));
+	ctx->super->version = SPDK_BS_VERSION;
+	ctx->super->length = sizeof(*ctx->super);
+	ctx->super->super_blob = bs->super_blob;
+	ctx->super->clean = 0;
+	ctx->super->cluster_size = bs->cluster_sz;
+	ctx->super->io_unit_size = bs->io_unit_size;
+	memcpy(&ctx->super->bstype, &bs->bstype, sizeof(bs->bstype));
+
+	/* Calculate how many pages the metadata consumes at the front
+	 * of the disk.
+	 */
+
+	/* The super block uses 1 page */
+	num_md_pages = 1;
+
+
+	/* The used_md_pages mask requires 1 bit per metadata page, rounded
+	 * up to the nearest page, plus a header.
+	 */
+	ctx->super->used_page_mask_start = num_md_pages;
+	ctx->super->used_page_mask_len = spdk_divide_round_up(sizeof(struct spdk_bs_md_mask) +
+					 spdk_divide_round_up(bs->md_len, 8),
+					 SPDK_BS_PAGE_SIZE);
+	num_md_pages += ctx->super->used_page_mask_len;
+
+	/* The used_clusters mask requires 1 bit per cluster, rounded
+	 * up to the nearest page, plus a header.
+	 */
+	ctx->super->used_cluster_mask_start = num_md_pages;
+	ctx->super->used_cluster_mask_len = spdk_divide_round_up(sizeof(struct spdk_bs_md_mask) +
+					    spdk_divide_round_up(bs->total_clusters, 8),
+					    SPDK_BS_PAGE_SIZE);
+	num_md_pages += ctx->super->used_cluster_mask_len;
+
+	/* The used_blobids mask requires 1 bit per metadata page, rounded
+	 * up to the nearest page, plus a header.
+	 */
+	ctx->super->used_blobid_mask_start = num_md_pages;
+	ctx->super->used_blobid_mask_len = spdk_divide_round_up(sizeof(struct spdk_bs_md_mask) +
+					   spdk_divide_round_up(bs->md_len, 8),
+					   SPDK_BS_PAGE_SIZE);
+	num_md_pages += ctx->super->used_blobid_mask_len;
+
+	/* The metadata region size was chosen above */
+	ctx->super->md_start = bs->md_start = num_md_pages;
+	ctx->super->md_len = bs->md_len;
+	//AK: TODO - up tp this point it looks like num_md_pages should not be changed..
+	num_md_pages += bs->md_len;
+
+	num_md_lba = bs_page_to_lba(bs, num_md_pages);
+
+	ctx->super->size = dev->blockcnt * dev->blocklen;
+
+	ctx->super->crc = blob_md_page_calc_crc(ctx->super);
+
+	num_md_clusters = spdk_divide_round_up(num_md_pages, bs->pages_per_cluster);
+	if (num_md_clusters > bs->total_clusters) {
+		SPDK_ERRLOG("Blobstore metadata cannot use more clusters than is available, "
+			    "please decrease number of pages reserved for metadata "
+			    "or increase cluster size.\n");
+		spdk_free(ctx->super);
+		spdk_bit_array_free(&ctx->used_clusters);
+		free(ctx);
+		bs_free(bs);
+		cb_fn(cb_arg, NULL, -ENOMEM);
+		return;
+	}
+	
+	/* Claim all of the clusters used by the metadata */
+	//AK: The following is no longer relevant - the clusters used by metadata are on another device
+	for (i = 0; i < num_md_clusters; i++) {
+		spdk_bit_array_set(ctx->used_clusters, i);
+	}
+	//AK: TODO this is changed - the number of free clusters is actually larger (since the md cluster(s) should be on another device)
+	//bs->num_free_clusters -= num_md_clusters;
+
+	bs->total_data_clusters = bs->num_free_clusters;
+
+	//AK: The following just cleares the MD - I need to find a way to to this on a standard bdev (and callback to user only after it's done)
+	//AK: TODO - no need to do this ATM, since the md_dev is cleaned by caller
+	//ctx is used only below, so nothing to do with it AFAIK
+	spdk_free(ctx->super);
+	free(ctx);
+	/*
+	cpl.type = SPDK_BS_CPL_TYPE_BS_HANDLE;
+	cpl.u.bs_handle.cb_fn = cb_fn;
+	cpl.u.bs_handle.cb_arg = cb_arg;
+	cpl.u.bs_handle.bs = bs;
+
+	seq = bs_sequence_start(bs->md_channel, &cpl);
+	if (!seq) {
+		spdk_free(ctx->super);
+		free(ctx);
+		bs_free(bs);
+		cb_fn(cb_arg, NULL, -ENOMEM);
+		return;
+	}
+
+	batch = bs_sequence_to_batch(seq, bs_init_trim_cpl, ctx);
+
+	//Clear metadata space
+	bs_batch_write_zeroes_dev(batch, 0, num_md_lba);
+
+	lba = num_md_lba;
+	lba_count = ctx->bs->dev->blockcnt - lba;
+	switch (opts.clear_method) {
+	case BS_CLEAR_WITH_UNMAP:
+		//Trim data clusters
+		bs_batch_unmap_dev(batch, lba, lba_count);
+		break;
+	case BS_CLEAR_WITH_WRITE_ZEROES:
+		//Write_zeroes to data clusters
+		bs_batch_write_zeroes_dev(batch, lba, lba_count);
+		break;
+	case BS_CLEAR_WITH_NONE:
+	default:
+		break;
+	}
+
+	bs_batch_close(batch);
+	*/
+
+	cb_fn(cb_arg, bs, 0);
 }
 
 /* END spdk_bs_init */
@@ -5528,7 +5834,8 @@ spdk_bs_total_data_cluster_count(struct spdk_blob_store *bs)
 static int
 bs_register_md_thread(struct spdk_blob_store *bs)
 {
-	bs->md_channel = spdk_get_io_channel(bs);
+
+	bs->md_channel = bs->md_dev_ctx? bs->md_dev_ctx->md_bs->md_channel : spdk_get_io_channel(bs);
 	if (!bs->md_channel) {
 		SPDK_ERRLOG("Failed to get IO channel.\n");
 		return -1;
@@ -7184,6 +7491,30 @@ blob_open_opts_copy(const struct spdk_blob_open_opts *src, struct spdk_blob_open
 #undef SET_FIELD
 }
 
+
+static void
+read_md_blob_complete(struct nvidia_md_dev_context *md_ctx)
+{
+	SPDK_NOTICELOG("entry\n");
+
+	//AK: TODO - handle the read md page...
+	
+	SPDK_NOTICELOG("exit\n");
+}
+
+static void
+read_md_blob(struct nvidia_md_dev_context *md_ctx, uint64_t lba)
+{
+	SPDK_NOTICELOG("entry\n");
+
+	/* Issue the read and compare the results in the callback. */
+	spdk_blob_io_read(md_ctx->md_blob, md_ctx->data_channel,
+			  md_ctx->md_buff, lba, 1, read_md_blob_complete,
+			  md_ctx);
+	
+	SPDK_NOTICELOG("exit\n");
+}
+
 static void
 bs_open_blob(struct spdk_blob_store *bs,
 	     spdk_blob_id blobid,
@@ -7214,6 +7545,8 @@ bs_open_blob(struct spdk_blob_store *bs,
 		return;
 	}
 
+	//AK: TODO - we know the blob is not opened yet.
+	//AK: blobstore md needs to be read
 	blob = blob_alloc(bs, blobid);
 	if (!blob) {
 		cb_fn(cb_arg, NULL, -ENOMEM);
@@ -7223,8 +7556,8 @@ bs_open_blob(struct spdk_blob_store *bs,
 	spdk_blob_open_opts_init(&opts_local, sizeof(opts_local));
 	if (opts) {
 		blob_open_opts_copy(opts, &opts_local);
-	}
-
+	}	
+	
 	blob->clear_method = opts_local.clear_method;
 
 	cpl.type = SPDK_BS_CPL_TYPE_BLOB_HANDLE;

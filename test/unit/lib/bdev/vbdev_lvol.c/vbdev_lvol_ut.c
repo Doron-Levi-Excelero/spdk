@@ -1139,6 +1139,7 @@ ut_lvol_resize(void)
 	g_lvolerrno = -1;
 	vbdev_lvol_resize(lvol, 20, vbdev_lvol_resize_complete, NULL);
 	CU_ASSERT(g_lvolerrno == 0);
+	//AK: TODO - BUGBUG? g_cluster_size is always 0 and the block count is as well. Not sure this was intended.
 	CU_ASSERT(lvol->bdev->blockcnt == 20 * g_cluster_size / lvol->bdev->blocklen);
 
 	/* Resize with NULL lvol */

@@ -326,6 +326,7 @@ bdev_blob_get_base_bdev(struct spdk_bs_dev *bs_dev)
 	return __get_bdev(bs_dev);
 }
 
+//AK: TODO - each of the functions set as pointers have to be checked for MD access
 static void
 blob_bdev_init(struct blob_bdev *b, struct spdk_bdev_desc *desc)
 {
@@ -350,6 +351,9 @@ blob_bdev_init(struct blob_bdev *b, struct spdk_bdev_desc *desc)
 	b->bs_dev.get_base_bdev = bdev_blob_get_base_bdev;
 }
 
+/*
+AK: TODO - I must return the bdev responsible for the md.
+*/
 int
 spdk_bdev_create_bs_dev_ext(const char *bdev_name, spdk_bdev_event_cb_t event_cb,
 			    void *event_ctx, struct spdk_bs_dev **_bs_dev)
@@ -357,7 +361,7 @@ spdk_bdev_create_bs_dev_ext(const char *bdev_name, spdk_bdev_event_cb_t event_cb
 	struct blob_bdev *b;
 	struct spdk_bdev_desc *desc;
 	int rc;
-
+	
 	b = calloc(1, sizeof(*b));
 
 	if (b == NULL) {
@@ -371,6 +375,7 @@ spdk_bdev_create_bs_dev_ext(const char *bdev_name, spdk_bdev_event_cb_t event_cb
 		return rc;
 	}
 
+	//AK: TODO - we'll need to change the function handlers in case the Data and MD are separated
 	blob_bdev_init(b, desc);
 
 	*_bs_dev = &b->bs_dev;

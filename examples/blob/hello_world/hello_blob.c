@@ -398,8 +398,12 @@ static void
 base_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
 		   void *event_ctx)
 {
+	//AK: TODO - I'll have to handle it better in case there's a MD/DATA event in the operational system
 	SPDK_WARNLOG("Unsupported bdev event: type %d\n", type);
 }
+
+#define MD_BDEV 	"Malloc0_MD"
+#define DATA_BDEV 	"Malloc0_Data"
 
 /*
  * Our initial event that kicks off everything from main().
@@ -441,6 +445,7 @@ hello_start(void *arg1)
 	spdk_bs_init(bs_dev, NULL, bs_init_complete, hello_context);
 }
 
+
 int
 main(int argc, char **argv)
 {
@@ -459,7 +464,7 @@ main(int argc, char **argv)
 	 * this example super simple we just hardcode it. We also need to
 	 * specify a name for the app.
 	 */
-	opts.name = "hello_blob";
+	opts.name = "hello_blob_nvidia";
 	opts.json_config_file = argv[1];
 
 

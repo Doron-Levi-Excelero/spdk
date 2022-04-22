@@ -177,16 +177,26 @@ struct spdk_blob {
 };
 
 struct spdk_blob_store {
-	uint64_t			md_start; /* Offset from beginning of disk, in pages */
-	uint32_t			md_len; /* Count, in pages */
+	uint64_t			md_start; 	/* Offset from beginning of disk, in pages */
+	uint32_t			md_len; 	/* Count, in pages */
 
+	//AK: TODO - this should be connected to the spdk_dev used for md_storage (in case one exists)
+	//AK: TODO - make sure the md_channel is connected to the md_bdev
 	struct spdk_io_channel		*md_channel;
 	uint32_t			max_channel_ops;
 
+	//AK: TODO - this should run on the spdk_dev used for md_storage (in case one exists)
 	struct spdk_thread		*md_thread;
 
+	//AK: TODO - an optional spdk_dev for MD, in case one exists
+	struct nvidia_md_dev_context *md_dev_ctx;
+	//AK: TODO - an optional read only dev, for restoring 
+	struct spdk_bdev_desc *read_only_dev;
+	
+	//AK: TODO - this might cause an issue if someone makes the assumption that 'dev' starts with the MD/superblob
 	struct spdk_bs_dev		*dev;
 
+	//AK: TODO - these DS might also require changes
 	struct spdk_bit_array		*used_md_pages;
 	struct spdk_bit_pool		*used_clusters;
 	struct spdk_bit_array		*used_blobids;
@@ -212,6 +222,7 @@ struct spdk_blob_store {
 	TAILQ_HEAD(, spdk_blob_list)	snapshots;
 
 	bool				clean;
+	
 };
 
 struct spdk_bs_channel {
