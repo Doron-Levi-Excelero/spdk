@@ -53,14 +53,40 @@
 #define BLOB_CRC32C_INITIAL    0xffffffffUL
 
 //AK: Added NVIDIA functions
+bool spdk_bs_has_dedicated_md_dev(struct spdk_blob_store *bs)
+{
+	return (NULL != bs->md_dev_ctx);
+}
 bool spdk_blob_has_dedicated_md_dev(struct spdk_blob *blob)
 {
-	return (NULL != blob->bs->md_dev_ctx);
+	return spdk_bs_has_dedicated_md_dev(blob->bs);
+}
+struct spdk_blob_store* spdk_blobstore_get_md_blob_store(struct spdk_blob_store *bs)
+{
+	return spdk_bs_has_dedicated_md_dev(bs)?bs->md_dev_ctx->md_bs:bs;
+}
+struct spdk_blob_store* spdk_blob_get_md_blob_store(struct spdk_blob *blob)
+{
+	return spdk_blobstore_get_md_blob_store(blob->bs);
 }
 struct spdk_blob* spdk_blob_get_md_blob(struct spdk_blob *blob)
 {
 	return spdk_blob_has_dedicated_md_dev(blob)?blob->bs->md_dev_ctx->md_blob:blob;
 }
+//AK: TODO - document
+uint64_t spdk_bs_md_lba(struct spdk_blob_store *bs, uint32_t page_num)
+{
+	return spdk_bs_has_dedicated_md_dev(bs)?
+		(bs_cluster_to_lba(spdk_blobstore_get_md_blob_store(bs), 1) + bs->md_start + page_num):
+		bs_md_page_to_lba(bs, page_num);
+}
+uint64_t spdk_bs_lba(struct spdk_blob_store *bs, uint32_t page_num)
+{
+	return spdk_bs_has_dedicated_md_dev(bs)?
+		(bs_cluster_to_lba(spdk_blobstore_get_md_blob_store(bs), 1) + page_num):
+		bs_page_to_lba(bs, page_num);
+}
+
 
 static int bs_register_md_thread(struct spdk_blob_store *bs);
 static int bs_unregister_md_thread(struct spdk_blob_store *bs);
@@ -1570,51 +1596,6 @@ blob_load_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 	}
 }
 
-
-static void
-read_md_page_complete(void *arg1, int bserrno)
-{
-	struct nvidia_md_dev_context *md_ctx  = arg1;
-	int match_res = -1;
-
-	SPDK_NOTICELOG("entry\n");
-	if (bserrno) {
-		unload_bs(md_ctx, "Error in read completion",
-			  bserrno);
-		return;
-	}
-
-	/* Now let's make sure things match. */
-	match_res = memcmp(md_ctx->data_write_buff, md_ctx->data_read_buff,
-			   md_ctx->data_io_unit_size);
-	if (match_res) {
-		unload_bs(md_ctx, "Error in data compare", -1);
-		return;
-	} else {
-		SPDK_NOTICELOG("read SUCCESS and data matches!\n");
-	}
-
-	/* Now let's close it and delete the blob in the callback. */
-	spdk_blob_close(md_ctx->data_blob, delete_blob, md_ctx);
-}
-
-/*
- * Function for reading a blob.
- */
-static void
-read_md_page(struct nvidia_md_dev_context *md_dev_ctx, 
-			spdk_bs_sequence_t *seq, void *payload,
-		     uint64_t lba, uint32_t lba_count,
-		     spdk_bs_sequence_cpl cb_fn, void *cb_arg)
-{
-	SPDK_NOTICELOG("entry\n");
-
-	/* Issue the read and compare the results in the callback. */
-	spdk_blob_io_read(md_ctx->md_blob, md_ctx->md_bs->md_channel,
-			  payload, lba, 1, read_md_page_complete,
-			  md_dev_ctx);
-}
-
 /* Load a blob from disk given a blobid */
 static void
 blob_load(spdk_bs_sequence_t *seq, struct spdk_blob *blob,
@@ -1623,8 +1604,7 @@ blob_load(spdk_bs_sequence_t *seq, struct spdk_blob *blob,
 	struct spdk_blob_load_ctx *ctx;
 	struct spdk_blob_store *bs;
 	uint32_t page_num;
-	uint64_t lba;
-
+		
 	blob_verify_md_op(blob);
 
 	bs = blob->bs;
@@ -1635,34 +1615,25 @@ blob_load(spdk_bs_sequence_t *seq, struct spdk_blob *blob,
 		return;
 	}
 
-	if(bs->md_dev_ctx) {
-		//AK: The blob being opened is on a data_bs
-		SPDK_NOTICELOG("Opening blob %" PRIu64 ", on data bs\n ", blobid);
-		//AK: TODO - we need to read the md blob at the correct offset
-		//It's just page_num (as no need to account for offset from the md)
+	ctx->blob = blob;
+	ctx->pages = spdk_realloc(ctx->pages, SPDK_BS_PAGE_SIZE, 0);
+	if (!ctx->pages) {
+		free(ctx);
+		cb_fn(seq, cb_arg, -ENOMEM);
+		return;
 	}
-	else {		
-		SPDK_NOTICELOG("Opening blob %" PRIu64 ", on md bs\n ", blobid);
-		ctx->blob = blob;
-		ctx->pages = spdk_realloc(ctx->pages, SPDK_BS_PAGE_SIZE, 0);
-		if (!ctx->pages) {
-			free(ctx);
-			cb_fn(seq, cb_arg, -ENOMEM);
-			return;
-		}
-		ctx->num_pages = 1;
-		ctx->cb_fn = cb_fn;
-		ctx->cb_arg = cb_arg;
-		ctx->seq = seq;
+	ctx->num_pages = 1;
+	ctx->cb_fn = cb_fn;
+	ctx->cb_arg = cb_arg;
+	ctx->seq = seq;
 
-		page_num = bs_blobid_to_page(blob->id);
-		lba = bs_md_page_to_lba(blob->bs, page_num);
-
-		blob->state = SPDK_BLOB_STATE_LOADING;
-		bs_sequence_read_dev(seq, &ctx->pages[0], lba,
-			     bs_byte_to_lba(bs, SPDK_BS_PAGE_SIZE),
-			     blob_load_cpl, ctx);
-	}
+	page_num = bs_blobid_to_page(blob->id);
+	
+	blob->state = SPDK_BLOB_STATE_LOADING;
+	bs_sequence_read_dev(seq, &ctx->pages[0], spdk_bs_md_lba(blob->bs, page_num),
+				bs_byte_to_lba(bs, SPDK_BS_PAGE_SIZE),
+				blob_load_cpl, ctx);
+	
 }
 
 struct spdk_blob_persist_ctx {
@@ -1966,7 +1937,9 @@ blob_persist_zero_pages(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 	 * so any pages in the clean list must be zeroed.
 	 */
 	for (i = 1; i < blob->clean.num_pages; i++) {
-		lba = bs_md_page_to_lba(bs, blob->clean.pages[i]);
+		//AK: TODO - check!
+		//lba = bs_md_page_to_lba(bs, blob->clean.pages[i]);
+		lba = spdk_bs_md_lba(bs, blob->clean.pages[i]);
 
 		bs_batch_write_zeroes_dev(batch, lba, lba_count);
 	}
@@ -1977,7 +1950,10 @@ blob_persist_zero_pages(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 
 		/* The first page in the metadata goes where the blobid indicates */
 		page_num = bs_blobid_to_page(blob->id);
-		lba = bs_md_page_to_lba(bs, page_num);
+		
+		//AK: TODO - check!
+		//lba = bs_md_page_to_lba(bs, page_num);
+		lba = spdk_bs_md_lba(bs, page_num);
 
 		bs_batch_write_zeroes_dev(batch, lba, lba_count);
 	}
@@ -2010,7 +1986,10 @@ blob_persist_write_page_root(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 
 	page = &ctx->pages[0];
 	/* The first page in the metadata goes where the blobid indicates */
-	lba = bs_md_page_to_lba(bs, bs_blobid_to_page(blob->id));
+
+	//AK: TODO - used to be	
+	//lba = bs_md_page_to_lba(bs, bs_blobid_to_page(blob->id));
+	lba = spdk_bs_md_lba(bs, bs_blobid_to_page(blob->id));
 
 	bs_sequence_write_dev(seq, page, lba, lba_count,
 			      blob_persist_zero_pages, ctx);
@@ -2042,6 +2021,8 @@ blob_persist_write_page_chain(spdk_bs_sequence_t *seq, struct spdk_blob_persist_
 		page = &ctx->pages[i];
 		assert(page->sequence_num == i);
 
+		//AK: TODO - used to be
+		//lba = bs_md_page_to_lba(bs, blob->active.pages[i]);
 		lba = bs_md_page_to_lba(bs, blob->active.pages[i]);
 
 		bs_batch_write_dev(batch, page, lba, lba_count);
@@ -2249,7 +2230,10 @@ blob_persist_write_extent_pages(spdk_bs_sequence_t *seq, void *cb_arg, int bserr
 
 		ctx->extent_page->crc = blob_md_page_calc_crc(ctx->extent_page);
 
-		bs_sequence_write_dev(seq, ctx->extent_page, bs_md_page_to_lba(blob->bs, extent_page_id),
+		//AK: TODO - used to be
+		//bs_md_page_to_lba(blob->bs, extent_page_id)
+
+		bs_sequence_write_dev(seq, ctx->extent_page, spdk_bs_md_lba(blob->bs, extent_page_id),
 				      bs_byte_to_lba(blob->bs, SPDK_BS_PAGE_SIZE),
 				      blob_persist_write_extent_pages, ctx);
 		return;
@@ -2343,8 +2327,9 @@ blob_persist_check_dirty(struct spdk_blob_persist_ctx *ctx)
 			return;
 		}
 
-		//AK: TODO - this just reads into the superblock (should be on the md_dev)
-		bs_sequence_read_dev(ctx->seq, ctx->super, bs_page_to_lba(ctx->blob->bs, 0),
+		//AK: used to be:
+		//bs_page_to_lba(ctx->blob->bs, 0)
+		bs_sequence_read_dev(ctx->seq, ctx->super, spdk_bs_lba(ctx->blob->bs, 0),
 				     bs_byte_to_lba(ctx->blob->bs, sizeof(*ctx->super)),
 				     blob_persist_dirty, ctx);
 	} else {
@@ -2359,10 +2344,6 @@ blob_persist(spdk_bs_sequence_t *seq, struct spdk_blob *blob,
 {
 	struct spdk_blob_persist_ctx *ctx;
 	
-	//Handle syncs using the md blob (if one is found)
-	struct spdk_blob *original_blob = blob;
-	blob = spdk_blob_get_md_blob(blob);
-
 	blob_verify_md_op(blob);
 
 	if (blob->state == SPDK_BLOB_STATE_CLEAN && TAILQ_EMPTY(&blob->persists_to_complete)) {
@@ -3566,11 +3547,15 @@ static void
 bs_write_super(spdk_bs_sequence_t *seq, struct spdk_blob_store *bs,
 	       struct spdk_bs_super_block *super, spdk_bs_sequence_cpl cb_fn, void *cb_arg)
 {
+
+	//AK: used to be:
+	//bs_page_to_lba(ctx->blob->bs, 0)
+
 	/* Update the values in the super block */
 	super->super_blob = bs->super_blob;
 	memcpy(&super->bstype, &bs->bstype, sizeof(bs->bstype));
 	super->crc = blob_md_page_calc_crc(super);
-	bs_sequence_write_dev(seq, super, bs_page_to_lba(bs, 0),
+	bs_sequence_write_dev(seq, super, spdk_bs_lba(bs, 0),
 			      bs_byte_to_lba(bs, sizeof(*super)),
 			      cb_fn, cb_arg);
 }
@@ -4653,8 +4638,11 @@ spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 		return;
 	}
 
+	//AK: TODO - used to be
+	//bs_page_to_lba(bs, 0)
+
 	/* Read the super block */
-	bs_sequence_read_dev(ctx->seq, ctx->super, bs_page_to_lba(bs, 0),
+	bs_sequence_read_dev(ctx->seq, ctx->super, spdk_bs_lba(bs, 0),
 			     bs_byte_to_lba(bs, sizeof(*ctx->super)),
 			     bs_load_super_cpl, ctx);
 }
@@ -5695,8 +5683,11 @@ spdk_bs_unload(struct spdk_blob_store *bs, spdk_bs_op_complete cb_fn, void *cb_a
 		return;
 	}
 
+	//AK: used to be:
+	//bs_page_to_lba(bs, 0)
+
 	/* Read super block */
-	bs_sequence_read_dev(ctx->seq, ctx->super, bs_page_to_lba(bs, 0),
+	bs_sequence_read_dev(ctx->seq, ctx->super, spdk_bs_lba(bs, 0),
 			     bs_byte_to_lba(bs, sizeof(*ctx->super)),
 			     bs_unload_read_super_cpl, ctx);
 }
@@ -5782,8 +5773,11 @@ spdk_bs_set_super(struct spdk_blob_store *bs, spdk_blob_id blobid,
 
 	bs->super_blob = blobid;
 
+	//AK: TODO - used to be
+	//bs_page_to_lba(bs, 0)
+
 	/* Read super block */
-	bs_sequence_read_dev(seq, ctx->super, bs_page_to_lba(bs, 0),
+	bs_sequence_read_dev(seq, ctx->super, spdk_bs_lba(bs, 0),
 			     bs_byte_to_lba(bs, sizeof(*ctx->super)),
 			     bs_set_super_read_cpl, ctx);
 }
@@ -7489,30 +7483,6 @@ blob_open_opts_copy(const struct spdk_blob_open_opts *src, struct spdk_blob_open
 
 #undef FIELD_OK
 #undef SET_FIELD
-}
-
-
-static void
-read_md_blob_complete(struct nvidia_md_dev_context *md_ctx)
-{
-	SPDK_NOTICELOG("entry\n");
-
-	//AK: TODO - handle the read md page...
-	
-	SPDK_NOTICELOG("exit\n");
-}
-
-static void
-read_md_blob(struct nvidia_md_dev_context *md_ctx, uint64_t lba)
-{
-	SPDK_NOTICELOG("entry\n");
-
-	/* Issue the read and compare the results in the callback. */
-	spdk_blob_io_read(md_ctx->md_blob, md_ctx->data_channel,
-			  md_ctx->md_buff, lba, 1, read_md_blob_complete,
-			  md_ctx);
-	
-	SPDK_NOTICELOG("exit\n");
 }
 
 static void
