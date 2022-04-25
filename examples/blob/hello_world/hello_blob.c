@@ -49,6 +49,8 @@ struct hello_context_t {
 	struct spdk_blob *blob;
 	spdk_blob_id blobid;
 	struct spdk_io_channel *channel;
+	struct spdk_bs_dev *bs_dev;
+	struct spdk_bs_dev *bs_md_dev;
 	uint8_t *read_buff;
 	uint8_t *write_buff;
 	uint64_t io_unit_size;
@@ -188,11 +190,129 @@ read_blob(struct hello_context_t *hello_context)
 		return;
 	}
 
+	hello_context->channel = spdk_bs_alloc_io_channel(hello_context->bs);
+	if (hello_context->channel == NULL) {
+		unload_bs(hello_context, "Error in allocating channel after reloading",
+			  -ENOMEM);
+		return;
+	}
+
 	/* Issue the read and compare the results in the callback. */
 	spdk_blob_io_read(hello_context->blob, hello_context->channel,
 			  hello_context->read_buff, 0, 1, read_complete,
 			  hello_context);
 }
+
+/*
+ * Callback function for re-opening a blob after closing.
+ */
+static void
+reopen_complete(void *cb_arg, struct spdk_blob *blob, int bserrno)
+{
+	struct hello_context_t *hello_context = cb_arg;
+
+	SPDK_NOTICELOG("entry\n");
+	if (bserrno) {
+		unload_bs(hello_context, "Error in open completion after closing",
+			  bserrno);
+		return;
+	}
+
+	hello_context->blob = blob;
+
+	read_blob(hello_context);
+}
+
+static void
+load_complete(void *arg1, struct spdk_blob_store *bs, int bserrno)
+{
+	struct hello_context_t *hello_context = arg1;
+
+	SPDK_NOTICELOG("entry\n");
+	if (bserrno) {
+		unload_bs(hello_context, "Error in load completion",
+			  bserrno);
+		return;
+	}
+
+	hello_context->bs = bs;
+
+	spdk_bs_open_blob(hello_context->bs, hello_context->blobid,
+			  reopen_complete, hello_context);
+}
+
+static void
+intermediate_unload_complete(void *arg1, int bserrno)
+{
+	struct hello_context_t *hello_context = arg1;
+	struct spdk_bdev *bdev = NULL;
+	struct spdk_bdev *md_bdev = NULL;
+
+	SPDK_NOTICELOG("entry\n");
+	if (bserrno) {
+		unload_bs(hello_context, "Error in intermediate unload completion",
+			  bserrno);
+		return;
+	}
+
+	hello_context->bs = NULL;
+	hello_context->bs_dev = NULL;
+	hello_context->bs_md_dev = NULL;
+
+	bdev = spdk_bdev_get_by_name("Malloc0");
+	if (bdev == NULL) {
+		SPDK_ERRLOG("Could not find a bdev\n");
+		spdk_app_stop(-1);
+		return;
+	}
+
+	md_bdev = spdk_bdev_get_by_name("Malloc1");
+	if (md_bdev == NULL) {
+		SPDK_ERRLOG("Could not find a bdev\n");
+		spdk_app_stop(-1);
+		return;
+	}
+
+	hello_context->bs_dev = spdk_bdev_create_bs_dev(bdev, NULL, NULL);
+	if (hello_context->bs_dev == NULL) {
+		SPDK_ERRLOG("Could not create blob bdev!!\n");
+		spdk_app_stop(-1);
+		return;
+	}
+
+	hello_context->bs_md_dev = spdk_bdev_create_bs_dev(md_bdev, NULL, NULL);
+	if (hello_context->bs_md_dev == NULL) {
+		SPDK_ERRLOG("Could not create blob bdev!!\n");
+		spdk_app_stop(-1);
+		return;
+	}
+
+	spdk_bs_load_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, NULL, load_complete, hello_context);
+}
+
+/*
+ * Callback function for closing a blob.
+ */
+static void
+close_complete(void *arg1, int bserrno)
+{
+	struct hello_context_t *hello_context = arg1;
+
+	SPDK_NOTICELOG("entry\n");
+	if (bserrno) {
+		unload_bs(hello_context, "Error in close completion",
+			  bserrno);
+		return;
+	}
+
+	hello_context->blob = NULL;
+
+	spdk_bs_free_io_channel(hello_context->channel);
+	hello_context->channel = NULL;
+
+	spdk_bs_unload(hello_context->bs, intermediate_unload_complete, hello_context);
+}
+
 
 /*
  * Callback function for writing a blob.
@@ -209,8 +329,8 @@ write_complete(void *arg1, int bserrno)
 		return;
 	}
 
-	/* Now let's read back what we wrote and make sure it matches. */
-	read_blob(hello_context);
+	/* Now let's close it and re-open in the callback. */
+	spdk_blob_close(hello_context->blob, close_complete, hello_context);
 }
 
 /*
@@ -401,7 +521,7 @@ hello_start(void *arg1)
 {
 	struct hello_context_t *hello_context = arg1;
 	struct spdk_bdev *bdev = NULL;
-	struct spdk_bs_dev *bs_dev = NULL;
+	struct spdk_bdev *md_bdev = NULL;
 
 	SPDK_NOTICELOG("entry\n");
 	/*
@@ -412,6 +532,13 @@ hello_start(void *arg1)
 	 */
 	bdev = spdk_bdev_get_by_name("Malloc0");
 	if (bdev == NULL) {
+		SPDK_ERRLOG("Could not find a bdev\n");
+		spdk_app_stop(-1);
+		return;
+	}
+
+	md_bdev = spdk_bdev_get_by_name("Malloc1");
+	if (md_bdev == NULL) {
 		SPDK_ERRLOG("Could not find a bdev\n");
 		spdk_app_stop(-1);
 		return;
@@ -430,14 +557,21 @@ hello_start(void *arg1)
 	 * However blobstore can be more tightly integrated into
 	 * any lower layer, such as NVMe for example.
 	 */
-	bs_dev = spdk_bdev_create_bs_dev(bdev, NULL, NULL);
-	if (bs_dev == NULL) {
+	hello_context->bs_dev = spdk_bdev_create_bs_dev(bdev, NULL, NULL);
+	if (hello_context->bs_dev == NULL) {
 		SPDK_ERRLOG("Could not create blob bdev!!\n");
 		spdk_app_stop(-1);
 		return;
 	}
 
-	spdk_bs_init(bs_dev, NULL, bs_init_complete, hello_context);
+	hello_context->bs_md_dev = spdk_bdev_create_bs_dev(md_bdev, NULL, NULL);
+	if (hello_context->bs_md_dev == NULL) {
+		SPDK_ERRLOG("Could not create blob bdev!!\n");
+		spdk_app_stop(-1);
+		return;
+	}
+
+	spdk_bs_init_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, NULL, bs_init_complete, hello_context);
 }
 
 int
