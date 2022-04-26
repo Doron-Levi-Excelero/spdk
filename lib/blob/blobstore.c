@@ -3174,6 +3174,8 @@ bs_dev_destroy(void *io_device)
 	struct spdk_blob	*blob, *blob_tmp;
 
 	bs->dev->destroy(bs->dev);
+	if (bs->md_dev)
+		bs->md_dev->destroy(bs->md_dev);
 
 	RB_FOREACH_SAFE(blob, spdk_blob_tree, &bs->open_blobs, blob_tmp) {
 		RB_REMOVE(spdk_blob_tree, &bs->open_blobs, blob);
@@ -3283,12 +3285,29 @@ bs_blob_list_free(struct spdk_blob_store *bs)
 }
 
 static void
+_spdk_bs_md_unregister_cpl(void *io_device)
+{
+    struct spdk_blob_store *bs = SPDK_CONTAINEROF(io_device, struct spdk_blob_store, md_dev);
+
+    bs_dev_destroy(bs);
+}
+
+static void
+_spdk_bs_unregister_cpl(void *io_device)
+{
+    struct spdk_blob_store *bs = io_device;
+    // TODO: CASE 123 if bs->md_dev is NULL we won't call _spdk_bs_md_unregister_cpl and therefore won't call bs_dev_destroy
+    spdk_io_device_unregister(&bs->md_dev, _spdk_bs_md_unregister_cpl);
+}
+
+static void
 bs_free(struct spdk_blob_store *bs)
 {
 	bs_blob_list_free(bs);
 
 	bs_unregister_md_thread(bs);
-	spdk_io_device_unregister(bs, bs_dev_destroy);
+	// TODO: CASE 123 see above
+	spdk_io_device_unregister(bs, _spdk_bs_unregister_cpl);
 }
 
 void
