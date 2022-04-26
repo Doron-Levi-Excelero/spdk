@@ -5611,7 +5611,8 @@ spdk_bs_total_data_cluster_count(struct spdk_blob_store *bs)
 static int
 bs_register_md_thread(struct spdk_blob_store *bs)
 {
-	bs->md_channel = spdk_get_io_channel(bs);
+	// TODO: CASE 123 : if bs->md_dev is NULL use bs->dev
+	bs->md_channel = spdk_get_io_channel(&bs->md_dev);
 	if (!bs->md_channel) {
 		SPDK_ERRLOG("Failed to get IO channel.\n");
 		return -1;
