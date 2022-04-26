@@ -3095,15 +3095,12 @@ blob_get_snapshot_and_clone_entries(struct spdk_blob *blob,
 }
 
 static int
-bs_channel_create(void *io_device, void *ctx_buf)
+bs_channel_create_common(void *io_device, void *ctx_buf, struct spdk_bs_dev *dev)
 {
 	struct spdk_blob_store		*bs = io_device;
 	struct spdk_bs_channel		*channel = ctx_buf;
-	struct spdk_bs_dev		*dev;
 	uint32_t			max_ops = bs->max_channel_ops;
 	uint32_t			i;
-
-	dev = bs->dev;
 
 	channel->req_mem = calloc(max_ops, sizeof(struct spdk_bs_request_set));
 	if (!channel->req_mem) {
@@ -3116,7 +3113,7 @@ bs_channel_create(void *io_device, void *ctx_buf)
 		TAILQ_INSERT_TAIL(&channel->reqs, &channel->req_mem[i], link);
 	}
 
-	channel->bs = bs;
+	channel->bs = bs; /* XXX: unused, remove? */
 	channel->dev = dev;
 	channel->dev_channel = dev->create_channel(dev);
 
@@ -3130,6 +3127,22 @@ bs_channel_create(void *io_device, void *ctx_buf)
 	TAILQ_INIT(&channel->queued_io);
 
 	return 0;
+}
+
+static int
+bs_channel_create(void *io_device, void *ctx_buf)
+{
+    struct spdk_blob_store *bs = io_device;
+
+    return bs_channel_create_common(bs, ctx_buf, bs->dev);
+}
+
+static int
+bs_md_channel_create(void *io_device, void *ctx_buf)
+{
+    struct spdk_blob_store *bs = SPDK_CONTAINEROF(io_device, struct spdk_blob_store, md_dev);
+
+    return bs_channel_create_common(bs, ctx_buf, bs->md_dev ? bs->md_dev : bs->dev);
 }
 
 static void
