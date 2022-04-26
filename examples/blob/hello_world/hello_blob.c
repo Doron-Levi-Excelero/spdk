@@ -50,11 +50,21 @@ struct hello_context_t {
 	struct spdk_blob *blob;
 	spdk_blob_id blobid;
 	struct spdk_io_channel *channel;
+	struct spdk_bs_dev *bs_dev;
+	struct spdk_bs_dev *bs_md_dev;
 	uint8_t *read_buff;
 	uint8_t *write_buff;
 	uint64_t io_unit_size;
 	int rc;
+	int flavor;
 };
+
+static void
+base_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
+		   void *event_ctx)
+{
+	SPDK_WARNLOG("Unsupported bdev event: type %d\n", type);
+}
 
 /*
  * Free up memory that we allocated.
@@ -189,10 +199,119 @@ read_blob(struct hello_context_t *hello_context)
 		return;
 	}
 
+	if (hello_context->flavor) {	// We need to reallocate the io_channel that we freed before
+		hello_context->channel = spdk_bs_alloc_io_channel(hello_context->bs);
+		if (hello_context->channel == NULL) {
+			unload_bs(hello_context, "Error in allocating channel",
+				  -ENOMEM);
+			return;
+		}
+	}
+
 	/* Issue the read and compare the results in the callback. */
 	spdk_blob_io_read(hello_context->blob, hello_context->channel,
 			  hello_context->read_buff, 0, 1, read_complete,
 			  hello_context);
+}
+
+/*
+ * Callback function for re-opening a blob after closing.
+ */
+static void
+reopen_complete(void *cb_arg, struct spdk_blob *blob, int bserrno)
+{
+	struct hello_context_t *hello_context = cb_arg;
+
+	SPDK_NOTICELOG("entry\n");
+	if (bserrno) {
+		unload_bs(hello_context, "Error in open completion after closing",
+			  bserrno);
+		return;
+	}
+
+	hello_context->blob = blob;
+
+	read_blob(hello_context);
+}
+
+static void
+load_complete(void *arg1, struct spdk_blob_store *bs, int bserrno)
+{
+	struct hello_context_t *hello_context = arg1;
+
+	SPDK_NOTICELOG("entry\n");
+	if (bserrno) {
+		unload_bs(hello_context, "Error in load completion",
+			  bserrno);
+		return;
+	}
+
+	hello_context->bs = bs;
+
+	spdk_bs_open_blob(hello_context->bs, hello_context->blobid,
+			  reopen_complete, hello_context);
+}
+
+static void
+intermediate_unload_complete(void *arg1, int bserrno)
+{
+	struct hello_context_t *hello_context = arg1;
+	struct spdk_bs_dev *bs_dev = NULL;
+	int rc;
+
+	SPDK_NOTICELOG("entry\n");
+	if (bserrno) {
+		unload_bs(hello_context, "Error in intermediate unload completion",
+			  bserrno);
+		return;
+	}
+
+	hello_context->bs = NULL;
+	hello_context->bs_dev = NULL;
+	hello_context->bs_md_dev = NULL;
+
+	rc = spdk_bdev_create_bs_dev_ext("Malloc0", base_bdev_event_cb, NULL, &bs_dev);
+	if (rc != 0) {
+		SPDK_ERRLOG("Could not create blob bdev, %s!!\n",
+			    spdk_strerror(-rc));
+		spdk_app_stop(-1);
+		return;
+	}
+	hello_context->bs_dev = bs_dev;
+
+	rc = spdk_bdev_create_bs_dev_ext("Malloc1", base_bdev_event_cb, NULL, &bs_dev);
+	if (rc != 0) {
+		SPDK_ERRLOG("Could not create MD bdev, %s!!\n",
+			    spdk_strerror(-rc));
+		spdk_app_stop(-1);
+		return;
+	}
+	hello_context->bs_md_dev = bs_dev;
+
+	spdk_bs_load_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, NULL, load_complete, hello_context);
+}
+
+/*
+ * Callback function for closing a blob.
+ */
+static void
+close_complete(void *arg1, int bserrno)
+{
+	struct hello_context_t *hello_context = arg1;
+
+	SPDK_NOTICELOG("entry\n");
+	if (bserrno) {
+		unload_bs(hello_context, "Error in close completion",
+			  bserrno);
+		return;
+	}
+
+	hello_context->blob = NULL;
+
+	spdk_bs_free_io_channel(hello_context->channel);
+	hello_context->channel = NULL;
+
+	spdk_bs_unload(hello_context->bs, intermediate_unload_complete, hello_context);
 }
 
 /*
@@ -209,9 +328,13 @@ write_complete(void *arg1, int bserrno)
 			  bserrno);
 		return;
 	}
-
-	/* Now let's read back what we wrote and make sure it matches. */
-	read_blob(hello_context);
+	if (hello_context->flavor) {
+		/* Now let's close it and re-open in the callback. */
+		spdk_blob_close(hello_context->blob, close_complete, hello_context);
+	} else {
+		/* Now let's read back what we wrote and make sure it matches. */
+		read_blob(hello_context);
+	}
 }
 
 /*
@@ -394,13 +517,6 @@ bs_init_complete(void *cb_arg, struct spdk_blob_store *bs,
 	create_blob(hello_context);
 }
 
-static void
-base_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
-		   void *event_ctx)
-{
-	SPDK_WARNLOG("Unsupported bdev event: type %d\n", type);
-}
-
 /*
  * Our initial event that kicks off everything from main().
  */
@@ -437,8 +553,20 @@ hello_start(void *arg1)
 		spdk_app_stop(-1);
 		return;
 	}
-
-	spdk_bs_init(bs_dev, NULL, bs_init_complete, hello_context);
+	hello_context->bs_dev = bs_dev;
+	if (hello_context->flavor) {
+		rc = spdk_bdev_create_bs_dev_ext("Malloc1", base_bdev_event_cb, NULL, &bs_dev);
+		if (rc != 0) {
+			SPDK_ERRLOG("Could not create blob MD bdev, %s!!\n",
+				    spdk_strerror(-rc));
+			spdk_app_stop(-1);
+			return;
+		}
+		hello_context->bs_md_dev = bs_dev;
+		spdk_bs_init_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, NULL, bs_init_complete, hello_context);
+	} else {
+		spdk_bs_init(bs_dev, NULL, bs_init_complete, hello_context);
+	}
 }
 
 int
@@ -474,18 +602,29 @@ main(int argc, char **argv)
 	 */
 	hello_context = calloc(1, sizeof(struct hello_context_t));
 	if (hello_context != NULL) {
-		/*
-		 * spdk_app_start() will block running hello_start() until
-		 * spdk_app_stop() is called by someone (not simply when
-		 * hello_start() returns), or if an error occurs during
-		 * spdk_app_start() before hello_start() runs.
-		 */
-		rc = spdk_app_start(&opts, hello_start, hello_context);
-		if (rc) {
-			SPDK_NOTICELOG("ERROR!\n");
-		} else {
-			SPDK_NOTICELOG("SUCCESS!\n");
+		int flavor = 0;
+		for (; flavor < 2; flavor++) {
+			hello_context->flavor = flavor;
+			/*
+			 * spdk_app_start() will block running hello_start() until
+			 * spdk_app_stop() is called by someone (not simply when
+			 * hello_start() returns), or if an error occurs during
+			 * spdk_app_start() before hello_start() runs.
+			 */
+			rc = spdk_app_start(&opts, hello_start, hello_context);
+			if (rc) {
+				SPDK_NOTICELOG("ERROR! %d \n", flavor);
+			} else {
+				SPDK_NOTICELOG("SUCCESS! %d \n", flavor);
+			}
+
+			if (!flavor) { // Micro cleanup for next flavor of test
+				spdk_free(hello_context->read_buff);
+				spdk_free(hello_context->write_buff);
+				spdk_app_fini();
+			}
 		}
+
 		/* Free up memory that we allocated */
 		hello_cleanup(hello_context);
 	} else {
