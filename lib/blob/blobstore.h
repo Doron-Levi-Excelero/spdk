@@ -186,6 +186,7 @@ struct spdk_blob_store {
 	struct spdk_thread		*md_thread;
 
 	struct spdk_bs_dev		*dev;
+	struct spdk_bs_dev		*md_dev;
 
 	struct spdk_bit_array		*used_md_pages;
 	struct spdk_bit_pool		*used_clusters;

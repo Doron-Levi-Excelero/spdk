@@ -3400,7 +3400,7 @@ struct spdk_bs_load_ctx {
 };
 
 static int
-bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts, struct spdk_blob_store **_bs,
+bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *opts, struct spdk_blob_store **_bs,
 	 struct spdk_bs_load_ctx **_ctx)
 {
 	struct spdk_blob_store	*bs;
@@ -3421,6 +3421,24 @@ bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts, struct spdk_blob_st
 			    opts->cluster_sz, SPDK_BS_PAGE_SIZE);
 		return -EINVAL;
 	}
+	// TODO: check the MD device has enough size for the amount of MD required for the number of clusters available
+	/*
+	if (md_dev) {
+		md_dev_size = md_dev->blocklen * dev->blockcnt;
+		if (md_dev_size < (opts->cluster_sz / SEPARATE_MD_SIZE_RATIO)) {
+			// MD Device size cannot be smaller than md size of blobstore
+			SPDK_INFOLOG(blob, "MD Device size %" PRIu64 " is smaller than md size %" PRIu32 "\n",
+				     md_dev_size, opts->cluster_sz / SEPARATE_MD_SIZE_RATIO);
+			return -ENOSPC;
+		}
+		if ((opts->cluster_sz / SEPARATE_MD_SIZE_RATIO) < SPDK_BS_PAGE_SIZE) {
+			// MD size cannot be smaller than page size
+			SPDK_ERRLOG("MD size %" PRIu32 " is smaller than page size %d\n",
+				    opts->cluster_sz / SEPARATE_MD_SIZE_RATIO, SPDK_BS_PAGE_SIZE);
+			return -EINVAL;
+		}
+	}
+	*/
 	bs = calloc(1, sizeof(struct spdk_blob_store));
 	if (!bs) {
 		return -ENOMEM;
@@ -3448,6 +3466,7 @@ bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts, struct spdk_blob_st
 	RB_INIT(&bs->open_blobs);
 	TAILQ_INIT(&bs->snapshots);
 	bs->dev = dev;
+	bs->md_dev = md_dev;
 	bs->md_thread = spdk_get_thread();
 	assert(bs->md_thread != NULL);
 
@@ -3482,6 +3501,10 @@ bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts, struct spdk_blob_st
 	bs->open_blobids = spdk_bit_array_create(0);
 
 	pthread_mutex_init(&bs->used_clusters_mutex, NULL);
+
+	// TODO: CASE 123 if (bs->md_dev) (otherwise bs_md_channel_create creates another channel on bs->dev anyway)
+	spdk_io_device_register(&bs->md_dev, bs_md_channel_create, bs_channel_destroy,
+				sizeof(struct spdk_bs_channel), "blobstore_md");
 
 	spdk_io_device_register(bs, bs_channel_create, bs_channel_destroy,
 				sizeof(struct spdk_bs_channel), "blobstore");
@@ -4554,8 +4577,8 @@ bs_opts_copy(struct spdk_bs_opts *src, struct spdk_bs_opts *dst)
 	return 0;
 }
 
-void
-spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
+static void
+_spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *o,
 	     spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_blob_store	*bs;
@@ -4586,7 +4609,7 @@ spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 		return;
 	}
 
-	err = bs_alloc(dev, &opts, &bs, &ctx);
+	err = bs_alloc(dev, md_dev, &opts, &bs, &ctx);
 	if (err) {
 		dev->destroy(dev);
 		cb_fn(cb_arg, NULL, err);
@@ -4611,6 +4634,20 @@ spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 	bs_sequence_read_dev(ctx->seq, ctx->super, bs_page_to_lba(bs, 0),
 			     bs_byte_to_lba(bs, sizeof(*ctx->super)),
 			     bs_load_super_cpl, ctx);
+}
+
+void
+spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
+         spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+    _spdk_bs_load(dev, NULL, o, cb_fn, cb_arg);
+}
+
+void
+spdk_bs_load_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *o,
+         spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+    _spdk_bs_load(dev, md_dev, o, cb_fn, cb_arg);
 }
 
 /* END spdk_bs_load */
@@ -4963,7 +5000,7 @@ spdk_bs_dump(struct spdk_bs_dev *dev, FILE *fp, spdk_bs_dump_print_xattr print_x
 
 	spdk_bs_opts_init(&opts, sizeof(opts));
 
-	err = bs_alloc(dev, &opts, &bs, &ctx);
+	err = bs_alloc(dev, NULL, &opts, &bs, &ctx); // TODO: overload spdk_bs_dump to use separate MD device for dump
 	if (err) {
 		dev->destroy(dev);
 		cb_fn(cb_arg, err);
@@ -5020,8 +5057,8 @@ bs_init_trim_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 			      bs_init_persist_super_cpl, ctx);
 }
 
-void
-spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
+static void
+_spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *o,
 	     spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_bs_load_ctx *ctx;
@@ -5060,7 +5097,7 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 		return;
 	}
 
-	rc = bs_alloc(dev, &opts, &bs, &ctx);
+	rc = bs_alloc(dev, md_dev, &opts, &bs, &ctx);
 	if (rc) {
 		dev->destroy(dev);
 		cb_fn(cb_arg, NULL, rc);
@@ -5216,6 +5253,20 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 	}
 
 	bs_batch_close(batch);
+}
+
+void
+spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
+         spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+    _spdk_bs_init(dev, NULL, o, cb_fn, cb_arg);
+}
+
+void
+spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *o,
+         spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+    _spdk_bs_init(dev, md_dev, o, cb_fn, cb_arg);
 }
 
 /* END spdk_bs_init */
