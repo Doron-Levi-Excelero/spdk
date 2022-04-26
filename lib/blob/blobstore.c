@@ -3141,7 +3141,7 @@ static int
 bs_md_channel_create(void *io_device, void *ctx_buf)
 {
     struct spdk_blob_store *bs = SPDK_CONTAINEROF(io_device, struct spdk_blob_store, md_dev);
-
+    // TODO: CASE 123 if bs->md_dev is NULL we call bs_create_common with bs->dev twice?
     return bs_channel_create_common(bs, ctx_buf, bs->md_dev ? bs->md_dev : bs->dev);
 }
 
