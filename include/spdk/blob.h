@@ -251,6 +251,8 @@ void spdk_bs_opts_init(struct spdk_bs_opts *opts, size_t opts_size);
  * Load a blobstore from the given device.
  *
  * \param dev Blobstore block device.
+ * \param md_dev Blobstore metadata block device - Optional:
+ *        calling spdk_bs_load is the same as calling spdk_bs_load_with_md_dev with md_dev as NULL
  * \param opts The structure which contains the option values for the blobstore.
  * \param cb_fn Called when the loading is complete.
  * \param cb_arg Argument passed to function cb_fn.
@@ -258,16 +260,25 @@ void spdk_bs_opts_init(struct spdk_bs_opts *opts, size_t opts_size);
 void spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts,
 		  spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
 
+void spdk_bs_load_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *opts,
+          spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
+
 /**
  * Initialize a blobstore on the given device.
  *
  * \param dev Blobstore block device.
+ * \param md_dev Blobstore metadata block device - Optional:
+ *        calling spdk_bs_init is the same as calling spdk_bs_init_with_md_dev with md_dev as NULL
  * \param opts The structure which contains the option values for the blobstore.
  * \param cb_fn Called when the initialization is complete.
  * \param cb_arg Argument passed to function cb_fn.
  */
 void spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts,
 		  spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
+
+void spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *opts,
+          spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
+
 
 typedef void (*spdk_bs_dump_print_xattr)(FILE *fp, const char *bstype, const char *name,
 		const void *value, size_t value_length);
