@@ -43,6 +43,7 @@ SPDK_LOG_REGISTER_COMPONENT(lvol_rpc)
 struct rpc_bdev_lvol_create_lvstore {
 	char *lvs_name;
 	char *bdev_name;
+	char *md_bdev_name;
 	uint32_t cluster_sz;
 	char *clear_method;
 };
@@ -87,6 +88,7 @@ free_rpc_bdev_lvol_create_lvstore(struct rpc_bdev_lvol_create_lvstore *req)
 
 static const struct spdk_json_object_decoder rpc_bdev_lvol_create_lvstore_decoders[] = {
 	{"bdev_name", offsetof(struct rpc_bdev_lvol_create_lvstore, bdev_name), spdk_json_decode_string},
+	{"md_bdev_name", offsetof(struct rpc_bdev_lvol_create_lvstore, md_bdev_name), spdk_json_decode_string},
 	{"cluster_sz", offsetof(struct rpc_bdev_lvol_create_lvstore, cluster_sz), spdk_json_decode_uint32, true},
 	{"lvs_name", offsetof(struct rpc_bdev_lvol_create_lvstore, lvs_name), spdk_json_decode_string},
 	{"clear_method", offsetof(struct rpc_bdev_lvol_create_lvstore, clear_method), spdk_json_decode_string, true},
@@ -147,7 +149,7 @@ rpc_bdev_lvol_create_lvstore(struct spdk_jsonrpc_request *request,
 		clear_method = LVS_CLEAR_WITH_UNMAP;
 	}
 
-	rc = vbdev_lvs_create(req.bdev_name, req.lvs_name, req.cluster_sz, clear_method,
+	rc = vbdev_lvs_create(req.bdev_name, req.md_bdev_name, req.lvs_name, req.cluster_sz, clear_method,
 			      rpc_lvol_store_construct_cb, request);
 	if (rc < 0) {
 		spdk_jsonrpc_send_error_response(request, -rc, spdk_strerror(rc));
