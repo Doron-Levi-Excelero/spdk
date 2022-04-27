@@ -152,6 +152,8 @@ delete_blob(void *arg1, int bserrno)
 			    delete_complete, hello_context);
 }
 
+static void blob_write(struct hello_context_t *hello_context);
+
 /*
  * Callback function for reading a blob.
  */
@@ -176,6 +178,11 @@ read_complete(void *arg1, int bserrno)
 		return;
 	} else {
 		SPDK_NOTICELOG("read SUCCESS and data matches!\n");
+	}
+
+	if (hello_context->flavor > 2) { // Read before write complete return to write before read
+		blob_write(hello_context);
+		return;
 	}
 
 	/* Now let's close it and delete the blob in the callback. */
@@ -349,14 +356,28 @@ blob_write(struct hello_context_t *hello_context)
 	 * Buffers for data transfer need to be allocated via SPDK. We will
 	 * transfer 1 io_unit of 4K aligned data at offset 0 in the blob.
 	 */
-	hello_context->write_buff = spdk_malloc(hello_context->io_unit_size,
-						0x1000, NULL, SPDK_ENV_LCORE_ID_ANY,
-						SPDK_MALLOC_DMA);
-	if (hello_context->write_buff == NULL) {
-		unload_bs(hello_context, "Error in allocating memory",
-			  -ENOMEM);
+	if (hello_context->flavor < 5) {	// Trigger read before write scenario
+		hello_context->write_buff = spdk_malloc(hello_context->io_unit_size,
+							0x1000, NULL, SPDK_ENV_LCORE_ID_ANY,
+							SPDK_MALLOC_DMA);
+		if (hello_context->write_buff == NULL) {
+			unload_bs(hello_context, "Error in allocating memory",
+				  -ENOMEM);
+			return;
+		}
+
+		memset(hello_context->write_buff, 0x0, hello_context->io_unit_size);	
+		hello_context->flavor+=5;
+
+		read_blob(hello_context);
 		return;
+	} else { // Read before write returned - free read buffer and channel
+		spdk_free(hello_context->read_buff);
+		spdk_bs_free_io_channel(hello_context->channel);
+		hello_context->channel = NULL;
+		hello_context->flavor-=5;
 	}
+
 	memset(hello_context->write_buff, 0x5a, hello_context->io_unit_size);
 
 	/* Now we have to allocate a channel. */
