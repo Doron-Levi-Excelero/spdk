@@ -368,6 +368,36 @@ spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_lvs_opts *o,
 }
 
 int
+spdk_lvs_init_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_lvs_opts *o,
+	      spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	struct spdk_lvol_store *lvs;
+	int error = 0;
+
+	if (lvol_store_initialize_fail) {
+		return -1;
+	}
+
+	if (lvol_store_initialize_cb_fail) {
+		bs_dev->destroy(bs_dev);
+		lvs = NULL;
+		error = -1;
+	} else {
+		lvs = calloc(1, sizeof(*lvs));
+		SPDK_CU_ASSERT_FATAL(lvs != NULL);
+		TAILQ_INIT(&lvs->lvols);
+		TAILQ_INIT(&lvs->pending_lvols);
+		spdk_uuid_generate(&lvs->uuid);
+		snprintf(lvs->name, sizeof(lvs->name), "%s", o->name);
+		lvs->bs_dev = bs_dev;
+		error = 0;
+	}
+	cb_fn(cb_arg, lvs, error);
+
+	return 0;
+}
+
+int
 spdk_lvs_unload(struct spdk_lvol_store *lvs, spdk_lvs_op_complete cb_fn, void *cb_arg)
 {
 	struct spdk_lvol *lvol, *tmp;

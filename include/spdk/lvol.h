@@ -124,6 +124,7 @@ typedef void (*spdk_lvol_op_complete)(void *cb_arg, int lvolerrno);
  *
  * \param bs_dev This is created on the given bdev by using spdk_bdev_create_bs_dev()
  * beforehand.
+ * \param bs_md_dev Optional separate MD device for BS - can be NULL
  * \param o Options for lvolstore.
  * \param cb_fn Completion callback.
  * \param cb_arg Completion callback custom arguments.
@@ -132,6 +133,9 @@ typedef void (*spdk_lvol_op_complete)(void *cb_arg, int lvolerrno);
  */
 int spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_lvs_opts *o,
 		  spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
+
+int spdk_lvs_init_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_lvs_opts *o,
+          spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
 
 /**
  * Rename the given lvolstore.

@@ -572,8 +572,8 @@ setup_lvs_opts(struct spdk_bs_opts *bs_opts, struct spdk_lvs_opts *o)
 	bs_opts->clear_method = (enum bs_clear_method)o->clear_method;
 }
 
-int
-spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_lvs_opts *o,
+static int
+_spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_lvs_opts *o,
 	      spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_lvol_store *lvs;
@@ -633,13 +633,36 @@ spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_lvs_opts *o,
 	lvs->bs_dev = bs_dev;
 	lvs->destruct = false;
 
-	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "LVOLSTORE");
+	if (bs_md_dev != NULL) {	// Example to ensure we only load the correcy type
+		snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "LVOLSTOREMD");
+	} else {
+		snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "LVOLSTORE");
+	}
 
 	SPDK_INFOLOG(lvol, "Initializing lvol store\n");
-	spdk_bs_init(bs_dev, &opts, lvs_init_cb, lvs_req);
+	if (bs_md_dev != NULL) {
+		spdk_bs_init_with_md_dev(bs_dev, bs_md_dev, &opts, lvs_init_cb, lvs_req);
+	} else {
+		spdk_bs_init(bs_dev, &opts, lvs_init_cb, lvs_req);
+	}
 
 	return 0;
 }
+
+int
+spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_lvs_opts *o,
+	      spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	return _spdk_lvs_init(bs_dev, NULL, o, cb_fn, cb_arg);
+}
+
+int
+spdk_lvs_init_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_lvs_opts *o,
+          spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	return _spdk_lvs_init(bs_dev, bs_md_dev, o, cb_fn, cb_arg);
+}
+
 
 static void
 lvs_rename_cb(void *cb_arg, int lvolerrno)
