@@ -371,6 +371,7 @@ int
 spdk_lvs_init_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_lvs_opts *o,
 	      spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
+	// TODO: add unitest functionality
 	struct spdk_lvol_store *lvs;
 	int error = 0;
 

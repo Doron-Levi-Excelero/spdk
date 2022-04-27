@@ -300,6 +300,7 @@ void
 spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *o,
 	     spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
 {
+	// TODO: add unitest functionality
 	struct lvol_ut_bs_dev *ut_dev = SPDK_CONTAINEROF(dev, struct lvol_ut_bs_dev, bs_dev);
 	struct spdk_blob_store *bs;
 
