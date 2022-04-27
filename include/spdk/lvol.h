@@ -130,7 +130,7 @@ typedef void (*spdk_lvol_op_complete)(void *cb_arg, int lvolerrno);
  *
  * \return 0 on success, negative errno on failure.
  */
-int spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_lvs_opts *o,
+int spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *md_bs_dev, struct spdk_lvs_opts *o,
 		  spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
 
 /**

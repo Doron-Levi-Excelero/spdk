@@ -573,7 +573,7 @@ setup_lvs_opts(struct spdk_bs_opts *bs_opts, struct spdk_lvs_opts *o)
 }
 
 int
-spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_lvs_opts *o,
+spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *md_bs_dev, struct spdk_lvs_opts *o,
 	      spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_lvol_store *lvs;
@@ -636,7 +636,7 @@ spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_lvs_opts *o,
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "LVOLSTORE");
 
 	SPDK_INFOLOG(lvol, "Initializing lvol store\n");
-	spdk_bs_init(bs_dev, &opts, lvs_init_cb, lvs_req);
+	spdk_bs_init_with_md_dev(bs_dev, md_bs_dev, &opts, lvs_init_cb, lvs_req);
 
 	return 0;
 }

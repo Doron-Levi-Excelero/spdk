@@ -221,10 +221,11 @@ end:
 }
 
 int
-vbdev_lvs_create(const char *base_bdev_name, const char *name, uint32_t cluster_sz,
+vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, const char *name, uint32_t cluster_sz,
 		 enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	struct spdk_bs_dev *bs_dev;
+	struct spdk_bs_dev *bs_dev = NULL;
+	struct spdk_bs_dev *md_bs_dev = NULL;
 	struct spdk_lvs_with_handle_req *lvs_req;
 	struct spdk_lvs_opts opts;
 	int rc;
@@ -262,11 +263,22 @@ vbdev_lvs_create(const char *base_bdev_name, const char *name, uint32_t cluster_
 		SPDK_ERRLOG("Cannot alloc memory for vbdev lvol store request pointer\n");
 		return -ENOMEM;
 	}
+		
+	if (base_md_bdev_name) {
+		rc = spdk_bdev_create_bs_dev_ext(base_md_bdev_name, vbdev_lvs_base_bdev_event_cb,
+					 NULL, &md_bs_dev);
+		if (rc < 0) {
+			SPDK_ERRLOG("Cannot create md blobstore device\n");
+			free(lvs_req);
+			return rc;
+		}
+	}
 
 	rc = spdk_bdev_create_bs_dev_ext(base_bdev_name, vbdev_lvs_base_bdev_event_cb,
 					 NULL, &bs_dev);
 	if (rc < 0) {
 		SPDK_ERRLOG("Cannot create blobstore device\n");
+		bs_dev->destroy(md_bs_dev);
 		free(lvs_req);
 		return rc;
 	}
@@ -276,7 +288,7 @@ vbdev_lvs_create(const char *base_bdev_name, const char *name, uint32_t cluster_
 	lvs_req->cb_fn = cb_fn;
 	lvs_req->cb_arg = cb_arg;
 
-	rc = spdk_lvs_init(bs_dev, &opts, _vbdev_lvs_create_cb, lvs_req);
+	rc = spdk_lvs_init(bs_dev, md_bs_dev, &opts, _vbdev_lvs_create_cb, lvs_req);
 	if (rc < 0) {
 		free(lvs_req);
 		bs_dev->destroy(bs_dev);
