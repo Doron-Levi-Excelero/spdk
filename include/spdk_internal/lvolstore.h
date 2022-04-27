@@ -67,6 +67,7 @@ struct spdk_lvs_with_handle_req {
 	void				*cb_arg;
 	struct spdk_lvol_store		*lvol_store;
 	struct spdk_bs_dev		*bs_dev;
+	struct spdk_bs_dev		*bs_md_dev;
 	struct spdk_bdev		*base_bdev;
 	int				lvserrno;
 };

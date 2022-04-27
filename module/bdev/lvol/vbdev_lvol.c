@@ -220,11 +220,12 @@ end:
 	return;
 }
 
-int
-vbdev_lvs_create(const char *base_bdev_name, const char *name, uint32_t cluster_sz,
+static int
+_vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, const char *name, uint32_t cluster_sz,
 		 enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_bs_dev *bs_dev;
+	struct spdk_bs_dev *bs_md_dev = NULL;
 	struct spdk_lvs_with_handle_req *lvs_req;
 	struct spdk_lvs_opts opts;
 	int rc;
@@ -263,20 +264,42 @@ vbdev_lvs_create(const char *base_bdev_name, const char *name, uint32_t cluster_
 		return -ENOMEM;
 	}
 
+	if (base_md_bdev_name != NULL) {	// Optional usage of MD device
+		rc = spdk_bdev_create_bs_dev_ext(base_md_bdev_name, vbdev_lvs_base_bdev_event_cb,
+						 NULL, &bs_md_dev);
+		if (rc < 0) {
+			SPDK_ERRLOG("Cannot create blobstore device\n");
+			free(lvs_req);
+			return rc;
+		}
+		lvs_req->bs_md_dev = bs_md_dev;
+	} /*else {
+		lvs_req->bs_md_dev = NULL;
+	}*/
+
+
 	rc = spdk_bdev_create_bs_dev_ext(base_bdev_name, vbdev_lvs_base_bdev_event_cb,
 					 NULL, &bs_dev);
 	if (rc < 0) {
 		SPDK_ERRLOG("Cannot create blobstore device\n");
+		if (bs_md_dev != NULL) { // Cleanup MD dev if created
+			bs_md_dev->destroy(bs_md_dev);
+		}
 		free(lvs_req);
 		return rc;
 	}
+
 
 	lvs_req->bs_dev = bs_dev;
 	lvs_req->base_bdev = bs_dev->get_base_bdev(bs_dev);
 	lvs_req->cb_fn = cb_fn;
 	lvs_req->cb_arg = cb_arg;
 
-	rc = spdk_lvs_init(bs_dev, &opts, _vbdev_lvs_create_cb, lvs_req);
+	if (lvs_req->bs_md_dev == NULL) { // No md device given
+		rc = spdk_lvs_init(bs_dev, &opts, _vbdev_lvs_create_cb, lvs_req);
+	} else {
+		rc = spdk_lvs_init_with_md(bs_dev, bs_md_dev, &opts, _vbdev_lvs_create_cb, lvs_req);
+	}
 	if (rc < 0) {
 		free(lvs_req);
 		bs_dev->destroy(bs_dev);
@@ -284,6 +307,20 @@ vbdev_lvs_create(const char *base_bdev_name, const char *name, uint32_t cluster_
 	}
 
 	return 0;
+}
+
+int
+vbdev_lvs_create(const char *base_bdev_name, const char *name, uint32_t cluster_sz,
+		 enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	return _vbdev_lvs_create(base_bdev_name, NULL, name, cluster_sz, clear_method, cb_fn, cb_arg);
+}
+
+int
+vbdev_lvs_create_with_md(const char *base_bdev_name, const char *base_md_bdev_name, const char *name, uint32_t cluster_sz,
+             enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	return _vbdev_lvs_create(base_bdev_name, base_md_bdev_name, name, cluster_sz, clear_method, cb_fn, cb_arg);
 }
 
 static void
