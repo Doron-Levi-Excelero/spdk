@@ -4,7 +4,9 @@
 	# Public functions
 	spdk_bs_opts_init;
 	spdk_bs_load;
+	spdk_bs_load_with_md_dev;
 	spdk_bs_init;
+	spdk_bs_init_with_md_dev;
 	spdk_bs_dump;
 	spdk_bs_destroy;
 	spdk_bs_unload;

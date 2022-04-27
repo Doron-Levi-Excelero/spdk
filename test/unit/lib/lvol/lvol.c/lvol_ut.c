@@ -297,6 +297,25 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 }
 
 void
+spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *o,
+	     spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	struct lvol_ut_bs_dev *ut_dev = SPDK_CONTAINEROF(dev, struct lvol_ut_bs_dev, bs_dev);
+	struct spdk_blob_store *bs;
+
+	bs = calloc(1, sizeof(*bs));
+	SPDK_CU_ASSERT_FATAL(bs != NULL);
+
+	TAILQ_INIT(&bs->blobs);
+
+	ut_dev->bs = bs;
+
+	memcpy(&bs->bs_opts, o, sizeof(struct spdk_bs_opts));
+
+	cb_fn(cb_arg, bs, 0);
+}
+
+void
 spdk_bs_unload(struct spdk_blob_store *bs, spdk_bs_op_complete cb_fn, void *cb_arg)
 {
 	cb_fn(cb_arg, 0);
