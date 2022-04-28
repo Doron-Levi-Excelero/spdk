@@ -3196,6 +3196,8 @@ bs_dev_destroy(void *io_device)
 	bs->dev->destroy(bs->dev);
 	if (bs->md_dev)
 		bs->md_dev->destroy(bs->md_dev);
+	if (bs->back_dev)
+		bs->back_dev->destroy(bs->back_dev);
 
 	RB_FOREACH_SAFE(blob, spdk_blob_tree, &bs->open_blobs, blob_tmp) {
 		RB_REMOVE(spdk_blob_tree, &bs->open_blobs, blob);
