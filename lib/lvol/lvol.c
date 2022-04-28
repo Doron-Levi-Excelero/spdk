@@ -573,7 +573,7 @@ setup_lvs_opts(struct spdk_bs_opts *bs_opts, struct spdk_lvs_opts *o)
 }
 
 static int
-_spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_lvs_opts *o,
+_spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_bs_dev *bs_back_dev, struct spdk_lvs_opts *o,
 	      spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_lvol_store *lvs;
@@ -641,7 +641,7 @@ _spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct
 
 	SPDK_INFOLOG(lvol, "Initializing lvol store\n");
 	if (bs_md_dev != NULL) {
-		spdk_bs_init_with_md_dev(bs_dev, bs_md_dev, &opts, lvs_init_cb, lvs_req);
+		spdk_bs_init_with_md_dev(bs_dev, bs_md_dev, bs_back_dev, &opts, lvs_init_cb, lvs_req);
 	} else {
 		spdk_bs_init(bs_dev, &opts, lvs_init_cb, lvs_req);
 	}
@@ -653,14 +653,14 @@ int
 spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_lvs_opts *o,
 	      spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	return _spdk_lvs_init(bs_dev, NULL, o, cb_fn, cb_arg);
+	return _spdk_lvs_init(bs_dev, NULL, NULL, o, cb_fn, cb_arg);
 }
 
 int
-spdk_lvs_init_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_lvs_opts *o,
+spdk_lvs_init_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_bs_dev *bs_back_dev, struct spdk_lvs_opts *o,
           spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	return _spdk_lvs_init(bs_dev, bs_md_dev, o, cb_fn, cb_arg);
+	return _spdk_lvs_init(bs_dev, bs_md_dev, bs_back_dev, o, cb_fn, cb_arg);
 }
 
 

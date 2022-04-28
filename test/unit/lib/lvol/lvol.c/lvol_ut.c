@@ -297,7 +297,7 @@ spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
 }
 
 void
-spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *o,
+spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev *back_dev, struct spdk_bs_opts *o,
 	     spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	// TODO: add unitest functionality

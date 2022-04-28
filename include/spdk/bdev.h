@@ -368,6 +368,9 @@ struct spdk_bdev *spdk_bdev_next_leaf(struct spdk_bdev *prev);
 int spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event_cb,
 		       void *event_ctx, struct spdk_bdev_desc **desc);
 
+int spdk_bdev_open(struct spdk_bdev *bdev, bool write, spdk_bdev_event_cb_t event_cb,
+		       void *event_ctx, struct spdk_bdev_desc **desc);
+
 /**
  * Close a previously opened block device.
  *

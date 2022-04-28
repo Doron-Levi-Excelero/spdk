@@ -584,7 +584,7 @@ hello_start(void *arg1)
 			return;
 		}
 		hello_context->bs_md_dev = bs_dev;
-		spdk_bs_init_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, NULL, bs_init_complete, hello_context);
+		spdk_bs_init_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, NULL, NULL, bs_init_complete, hello_context);
 	} else {
 		spdk_bs_init(bs_dev, NULL, bs_init_complete, hello_context);
 	}

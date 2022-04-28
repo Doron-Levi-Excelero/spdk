@@ -6448,18 +6448,52 @@ bdev_desc_alloc(struct spdk_bdev *bdev, spdk_bdev_event_cb_t event_cb, void *eve
 	return 0;
 }
 
-int
-spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event_cb,
+static int
+spdk_bdev_open_unsafe(struct spdk_bdev *bdev, bool write, spdk_bdev_event_cb_t event_cb,
 		   void *event_ctx, struct spdk_bdev_desc **_desc)
 {
 	struct spdk_bdev_desc *desc;
-	struct spdk_bdev *bdev;
 	int rc;
 
 	if (event_cb == NULL) {
 		SPDK_ERRLOG("Missing event callback function\n");
 		return -EINVAL;
 	}
+
+	rc = bdev_desc_alloc(bdev, event_cb, event_ctx, &desc);
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = bdev_open(bdev, write, desc);
+	if (rc != 0) {
+		bdev_desc_free(desc);
+		desc = NULL;
+	}
+
+	*_desc = desc;
+
+	return rc;
+}
+
+int
+spdk_bdev_open(struct spdk_bdev *bdev, bool write, spdk_bdev_event_cb_t event_cb,
+		   void *event_ctx, struct spdk_bdev_desc **_desc)
+{
+	int rc;
+	pthread_mutex_lock(&g_bdev_mgr.mutex);
+	rc = spdk_bdev_open_unsafe(bdev, write, event_cb, event_ctx, _desc);
+	pthread_mutex_unlock(&g_bdev_mgr.mutex);
+	return rc;
+}
+
+
+int
+spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event_cb,
+		   void *event_ctx, struct spdk_bdev_desc **_desc)
+{
+	struct spdk_bdev *bdev;
+	int rc;
 
 	pthread_mutex_lock(&g_bdev_mgr.mutex);
 
@@ -6471,19 +6505,7 @@ spdk_bdev_open_ext(const char *bdev_name, bool write, spdk_bdev_event_cb_t event
 		return -ENODEV;
 	}
 
-	rc = bdev_desc_alloc(bdev, event_cb, event_ctx, &desc);
-	if (rc != 0) {
-		pthread_mutex_unlock(&g_bdev_mgr.mutex);
-		return rc;
-	}
-
-	rc = bdev_open(bdev, write, desc);
-	if (rc != 0) {
-		bdev_desc_free(desc);
-		desc = NULL;
-	}
-
-	*_desc = desc;
+	rc = spdk_bdev_open_unsafe(bdev, write, event_cb, event_ctx, _desc);
 
 	pthread_mutex_unlock(&g_bdev_mgr.mutex);
 
