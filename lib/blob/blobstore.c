@@ -1355,6 +1355,22 @@ blob_load_snapshot_cpl(void *cb_arg, struct spdk_blob *snapshot, int bserrno)
 
 static void blob_update_clear_method(struct spdk_blob *blob);
 
+
+static int
+blob_set_default_backing_dev(struct spdk_blob *blob)
+{
+	if (blob->bs->back_dev) {
+		/* Super blob always gets zeroes as its backing dev. */
+		if (blob->id != blob->bs->super_blob) {
+			blob->back_bs_dev = blob->bs->back_dev->clone(blob->bs->back_dev);
+			return (blob->back_bs_dev) ? 0 : -ENOMEM;
+		}
+	}
+
+	blob->back_bs_dev = bs_create_zeroes_dev();
+	return 0;
+}
+
 static void
 blob_load_backing_dev(void *cb_arg)
 {
@@ -1377,8 +1393,12 @@ blob_load_backing_dev(void *cb_arg)
 					  blob_load_snapshot_cpl, ctx);
 			return;
 		} else {
-			/* add zeroes_dev for thin provisioned blob */
-			blob->back_bs_dev = bs_create_zeroes_dev();
+			/* add zeroes_dev or blobstore's back_dev as backing dev for thin provisioned blob */
+			rc = blob_set_default_backing_dev(blob);
+			if (rc) {
+				blob_load_final(ctx, rc);
+				return;
+			}
 		}
 	} else {
 		/* standard blob */
@@ -5058,7 +5078,7 @@ bs_init_trim_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 }
 
 static void
-_spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *o,
+_spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev *back_dev, struct spdk_bs_opts *o,
 	     spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_bs_load_ctx *ctx;
@@ -5103,6 +5123,8 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 		cb_fn(cb_arg, NULL, rc);
 		return;
 	}
+
+	bs->back_dev = back_dev;
 
 	if (opts.num_md_pages == SPDK_BLOB_OPTS_NUM_MD_PAGES) {
 		/* By default, allocate 1 page per cluster.
@@ -5259,14 +5281,14 @@ void
 spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
          spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-    _spdk_bs_init(dev, NULL, o, cb_fn, cb_arg);
+    _spdk_bs_init(dev, NULL, NULL, o, cb_fn, cb_arg);
 }
 
 void
-spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *o,
+spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev *back_dev, struct spdk_bs_opts *o,
          spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-    _spdk_bs_init(dev, md_dev, o, cb_fn, cb_arg);
+    _spdk_bs_init(dev, md_dev, back_dev, o, cb_fn, cb_arg);
 }
 
 /* END spdk_bs_init */
