@@ -1783,6 +1783,7 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
                                                      bdev_name=args.bdev_name,
                                                      lvs_name=args.lvs_name,
                                                      md_bdev_name=args.md_bdev_name,
+                                                     back_bdev_name=args.back_bdev_name,
                                                      cluster_sz=args.cluster_sz,
                                                      clear_method=args.clear_method))
 
@@ -1790,6 +1791,7 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
                               help='Add logical volume store on base bdev')
     p.add_argument('bdev_name', help='base bdev name')
     p.add_argument('-md', '--md_bdev_name', help='base bdev name used for metadata (optional)', default=None, required=False)
+    p.add_argument('-bd', '--back_bdev_name', help='base bdev name used for backing device (optional)', default=None, required=False)
     p.add_argument('lvs_name', help='name for lvol store')
     p.add_argument('-c', '--cluster-sz', help='size of cluster (in bytes)', type=int, required=False)
     p.add_argument('--clear-method', help="""Change clear method for data region.
