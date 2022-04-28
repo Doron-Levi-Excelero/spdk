@@ -256,6 +256,67 @@ cleanup:
 }
 SPDK_RPC_REGISTER("bdev_lvol_load_lvstore", rpc_bdev_lvol_load_lvstore, SPDK_RPC_RUNTIME)
 
+struct rpc_bdev_lvol_unload_lvstore {
+	char *name;
+};
+
+static void
+free_rpc_bdev_lvol_unload_lvstore(struct rpc_bdev_lvol_unload_lvstore *req)
+{
+	free(req->name);
+}
+
+static const struct spdk_json_object_decoder rpc_bdev_lvol_unload_lvstore_decoders[] = {
+	{"name", offsetof(struct rpc_bdev_lvol_unload_lvstore, name), spdk_json_decode_string}
+};
+
+static void
+rpc_bdev_lvol_unload_lvstore_cb(void *cb_arg, int lvserrno)
+{
+	struct spdk_jsonrpc_request *request = cb_arg;
+
+	if (lvserrno != 0) {
+		goto invalid;
+	}
+
+	spdk_jsonrpc_send_bool_response(request, true);
+	return;
+
+invalid:
+	spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+					 spdk_strerror(-lvserrno));
+}
+
+static void
+rpc_bdev_lvol_unload_lvstore(struct spdk_jsonrpc_request *request,
+			     const struct spdk_json_val *params)
+{
+	struct rpc_bdev_lvol_unload_lvstore req = {};
+	struct spdk_lvol_store *lvs;
+
+	if (spdk_json_decode_object(params, rpc_bdev_lvol_unload_lvstore_decoders,
+				    SPDK_COUNTOF(rpc_bdev_lvol_unload_lvstore_decoders),
+				    &req)) {
+		SPDK_INFOLOG(lvol_rpc, "spdk_json_decode_object failed\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "spdk_json_decode_object failed");
+		goto cleanup;
+	}
+
+	lvs = vbdev_get_lvol_store_by_name(req.name);
+	if (lvs == NULL) {
+		SPDK_INFOLOG(lvol_rpc, "no lvs existing for given name\n");
+		spdk_jsonrpc_send_error_response_fmt(request, -ENOENT, "Lvol store %s not found", req.name);
+		goto cleanup;
+	}
+
+	vbdev_lvs_unload(lvs, rpc_bdev_lvol_unload_lvstore_cb, request);
+
+cleanup:
+	free_rpc_bdev_lvol_unload_lvstore(&req);
+}
+SPDK_RPC_REGISTER("bdev_lvol_unload_lvstore", rpc_bdev_lvol_unload_lvstore, SPDK_RPC_RUNTIME)
+
 struct rpc_bdev_lvol_rename_lvstore {
 	char *old_name;
 	char *new_name;

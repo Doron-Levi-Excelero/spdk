@@ -492,6 +492,7 @@ vbdev_lvs_load(const char *base_bdev_name, const char *name,
 {
 	return _vbdev_lvs_load(base_bdev_name, NULL, name, cb_fn, cb_arg);
 }
+
 int
 vbdev_lvs_load_with_md(const char *base_bdev_name, const char *base_md_bdev_name, const char *name,
 		 spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)

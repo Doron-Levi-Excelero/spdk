@@ -1809,6 +1809,15 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p.add_argument('lvs_name', help='name for lvol store')
     p.set_defaults(func=bdev_lvol_load_lvstore)
 
+    def bdev_lvol_unload_lvstore(args):
+        rpc.lvol.bdev_lvol_unload_lvstore(args.client,
+                                          name=args.name)
+
+    p = subparsers.add_parser('bdev_lvol_unload_lvstore', aliases=['unload_lvol_store'],
+                              help='Unload a logical volume store')
+    p.add_argument('name', help='logical volume store name')    
+    p.set_defaults(func=bdev_lvol_unload_lvstore)
+
     def bdev_lvol_rename_lvstore(args):
         rpc.lvol.bdev_lvol_rename_lvstore(args.client,
                                           old_name=args.old_name,
