@@ -51,6 +51,16 @@ def bdev_lvol_rename_lvstore(client, old_name, new_name):
     }
     return client.call('bdev_lvol_rename_lvstore', params)
 
+def bdev_lvol_unload_lvstore(client, name):
+    """Unload a logical volume store.
+
+    Args:
+        name: existing logical volume store name
+    """
+    params = {
+        'name': name
+    }
+    return client.call('bdev_lvol_unload_lvstore', params)
 
 @deprecated_alias('construct_lvol_bdev')
 def bdev_lvol_create(client, lvol_name, size, thin_provision=False, uuid=None, lvs_name=None, clear_method=None):
