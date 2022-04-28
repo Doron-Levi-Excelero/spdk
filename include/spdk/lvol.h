@@ -138,6 +138,21 @@ int spdk_lvs_init_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_
           spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
 
 /**
+ * Load lvolstore from the given blobstore device.
+ *
+ * \param bs_dev Pointer to the blobstore device.
+ * \param bs_md_dev Optional separate MD device for BS - can be NULL
+ * \param cb_fn Completion callback.
+ * \param cb_arg Completion callback custom arguments.
+ */
+void
+spdk_lvs_load(struct spdk_bs_dev *bs_dev,
+		 spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
+void
+spdk_lvs_load_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev,
+		 spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
+
+/**
  * Rename the given lvolstore.
  *
  * \param lvs Pointer to lvolstore.
@@ -258,16 +273,6 @@ void spdk_lvol_close(struct spdk_lvol *lvol, spdk_lvol_op_complete cb_fn, void *
  * \return a pointer to the I/O channel.
  */
 struct spdk_io_channel *spdk_lvol_get_io_channel(struct spdk_lvol *lvol);
-
-/**
- * Load lvolstore from the given blobstore device.
- *
- * \param bs_dev Pointer to the blobstore device.
- * \param cb_fn Completion callback.
- * \param cb_arg Completion callback custom arguments.
- */
-void spdk_lvs_load(struct spdk_bs_dev *bs_dev, spdk_lvs_op_with_handle_complete cb_fn,
-		   void *cb_arg);
 
 /**
  * Open a lvol.

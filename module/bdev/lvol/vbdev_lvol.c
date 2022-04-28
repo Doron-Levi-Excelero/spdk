@@ -220,15 +220,195 @@ end:
 	return;
 }
 
+
+static void
+_vbdev_lvol_load_close_cb(struct spdk_lvs_with_handle_req *req)
+{
+	struct spdk_lvol_store *lvs = req->lvol_store;
+	if (lvs->lvols_opened >= lvs->lvol_count) {
+		SPDK_INFOLOG(vbdev_lvol, "Opening lvols finished\n");
+		req->cb_fn(req->cb_arg, lvs, req->lvserrno);
+		free(req);
+		return;		
+	}
+}
+
+
+//AK: TODO - check if enough
 static int
-_vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, const char *name, uint32_t cluster_sz,
-		 enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+_create_lvol_disk(struct spdk_lvol *lvol, bool destroy);
+
+static void
+_vbdev_lvs_lvol_open_finish(void *cb_arg, struct spdk_lvol *lvol, int lvolerrno)
+{
+	struct spdk_lvs_with_handle_req *req = cb_arg;	
+	struct spdk_lvol_store *lvs = req->lvol_store;
+
+	if (lvolerrno != 0) {
+		SPDK_ERRLOG("Error opening lvol %s\n", lvol->unique_id);
+		TAILQ_REMOVE(&lvs->lvols, lvol, link);
+		lvs->lvol_count--;
+		free(lvol);
+		goto end;
+	}
+
+	req->lvserrno = _create_lvol_disk(lvol, false);
+	if (req->lvserrno) {
+		SPDK_ERRLOG("Cannot create bdev for lvol %s\n", lvol->unique_id);
+		lvs->lvol_count--;
+		//AK: TODO - copy and change
+		_vbdev_lvol_load_close_cb(req);
+		SPDK_INFOLOG(vbdev_lvol, "Opening lvol %s failed\n", lvol->unique_id);
+		return;
+	}
+
+	lvs->lvols_opened++;
+	SPDK_INFOLOG(vbdev_lvol, "Opening lvol %s succeeded\n", lvol->unique_id);
+
+end:
+	if (lvs->lvols_opened >= lvs->lvol_count) {
+		SPDK_INFOLOG(vbdev_lvol, "Opening lvols finished\n");
+		
+		req->cb_fn(req->cb_arg, lvs, lvolerrno);
+		free(req);
+		return;
+	}
+}
+
+static void
+_vbdev_lvs_load_cb(void *cb_arg, struct spdk_lvol_store *lvs, int lvserrno)
+{	
+	struct spdk_lvs_with_handle_req *req = cb_arg;
+	struct lvol_store_bdev *lvs_bdev;
+	struct spdk_bdev *bdev = req->base_bdev;
+	struct spdk_bs_dev *bs_dev = req->bs_dev;
+	struct spdk_lvol *lvol, *tmp;
+	
+
+	if (lvserrno != 0) {
+		assert(lvs == NULL);
+		SPDK_ERRLOG("Cannot create lvol store bdev\n");
+		goto end;
+	}
+
+	lvserrno = spdk_bs_bdev_claim(bs_dev, &g_lvol_if);
+	if (lvserrno != 0) {
+		SPDK_INFOLOG(vbdev_lvol, "Lvol store base bdev already claimed by another bdev\n");
+		req->bs_dev->destroy(req->bs_dev);
+		goto end;
+	}
+
+	assert(lvs != NULL);
+
+	lvs_bdev = calloc(1, sizeof(*lvs_bdev));
+	if (!lvs_bdev) {
+		lvserrno = -ENOMEM;
+		goto end;
+	}
+	lvs_bdev->lvs = lvs;
+	lvs_bdev->bdev = bdev;
+	
+	lvs_bdev->req = NULL;
+
+	TAILQ_INSERT_TAIL(&g_spdk_lvol_pairs, lvs_bdev, lvol_stores);
+	SPDK_INFOLOG(vbdev_lvol, "Lvol store found on %s - begin parsing\n",
+		     req->base_bdev->name);
+	
+	lvs->lvols_opened = 0;
+
+	req->lvol_store = lvs;
+	//AK: TODO - need to open all volumes and complete later - need to check
+	if (!TAILQ_EMPTY(&lvs->lvols)) {
+		// Open all lvols
+		TAILQ_FOREACH_SAFE(lvol, &lvs->lvols, link, tmp) {
+			spdk_lvol_open(lvol, _vbdev_lvs_lvol_open_finish, req);
+		}
+		return;
+	} else {
+		SPDK_INFOLOG(vbdev_lvol, "Lvol store loading done\n");
+	}
+end:
+	req->cb_fn(req->cb_arg, lvs, lvserrno);
+	free(req);
+	return;
+}
+static int
+_vbdev_lvs_create_or_load(bool should_create, const char *base_bdev_name, const char *base_md_bdev_name, 
+		 struct spdk_lvs_opts *opts, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_bs_dev *bs_dev;
 	struct spdk_bs_dev *bs_md_dev = NULL;
 	struct spdk_lvs_with_handle_req *lvs_req;
-	struct spdk_lvs_opts opts;
 	int rc;
+
+	lvs_req = calloc(1, sizeof(*lvs_req));
+	if (!lvs_req) {
+		SPDK_ERRLOG("Cannot alloc memory for vbdev lvol store request pointer\n");
+		return -ENOMEM;
+	}
+
+	if (base_md_bdev_name != NULL) {	// Optional usage of MD device
+		rc = spdk_bdev_create_bs_dev_ext(base_md_bdev_name, vbdev_lvs_base_bdev_event_cb,
+						 NULL, &bs_md_dev);
+		if (rc < 0) {
+			SPDK_ERRLOG("Cannot create blobstore device\n");
+			free(lvs_req);
+			return rc;
+		}
+		lvs_req->bs_md_dev = bs_md_dev;
+	} /*else {
+		lvs_req->bs_md_dev = NULL;
+	}*/
+
+	rc = spdk_bdev_create_bs_dev_ext(base_bdev_name, vbdev_lvs_base_bdev_event_cb,
+					 NULL, &bs_dev);
+	if (rc < 0) {
+		SPDK_ERRLOG("Cannot create blobstore device\n");
+		if (bs_md_dev != NULL) { // Cleanup MD dev if created
+			bs_md_dev->destroy(bs_md_dev);
+		}
+		free(lvs_req);
+		return rc;
+	}
+
+	lvs_req->bs_dev = bs_dev;
+	lvs_req->base_bdev = bs_dev->get_base_bdev(bs_dev);
+	lvs_req->cb_fn = cb_fn;
+	lvs_req->cb_arg = cb_arg;
+
+	if (lvs_req->bs_md_dev == NULL) { // No md device given
+		if (should_create)
+		{
+			rc = spdk_lvs_init(bs_dev, opts, _vbdev_lvs_create_cb, lvs_req);
+		} else
+		{
+			spdk_lvs_load(bs_dev, _vbdev_lvs_load_cb, lvs_req);
+			rc = 0;
+		}
+	} else {
+		if (should_create)
+		{
+			rc = spdk_lvs_init_with_md(bs_dev, bs_md_dev, opts, _vbdev_lvs_create_cb, lvs_req);
+		} else
+		{
+			spdk_lvs_load_with_md(bs_dev, bs_md_dev, _vbdev_lvs_load_cb, lvs_req);
+			rc = 0;
+		}
+	}
+	if (rc < 0) {
+		free(lvs_req);
+		bs_dev->destroy(bs_dev);
+		return rc;
+	}
+
+	return 0;
+}
+
+static int
+_vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, const char *name, uint32_t cluster_sz,
+		 enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	struct spdk_lvs_opts opts;
 	int len;
 
 	if (base_bdev_name == NULL) {
@@ -258,55 +438,8 @@ _vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, con
 	}
 	snprintf(opts.name, sizeof(opts.name), "%s", name);
 
-	lvs_req = calloc(1, sizeof(*lvs_req));
-	if (!lvs_req) {
-		SPDK_ERRLOG("Cannot alloc memory for vbdev lvol store request pointer\n");
-		return -ENOMEM;
-	}
-
-	if (base_md_bdev_name != NULL) {	// Optional usage of MD device
-		rc = spdk_bdev_create_bs_dev_ext(base_md_bdev_name, vbdev_lvs_base_bdev_event_cb,
-						 NULL, &bs_md_dev);
-		if (rc < 0) {
-			SPDK_ERRLOG("Cannot create blobstore device\n");
-			free(lvs_req);
-			return rc;
-		}
-		lvs_req->bs_md_dev = bs_md_dev;
-	} /*else {
-		lvs_req->bs_md_dev = NULL;
-	}*/
-
-
-	rc = spdk_bdev_create_bs_dev_ext(base_bdev_name, vbdev_lvs_base_bdev_event_cb,
-					 NULL, &bs_dev);
-	if (rc < 0) {
-		SPDK_ERRLOG("Cannot create blobstore device\n");
-		if (bs_md_dev != NULL) { // Cleanup MD dev if created
-			bs_md_dev->destroy(bs_md_dev);
-		}
-		free(lvs_req);
-		return rc;
-	}
-
-
-	lvs_req->bs_dev = bs_dev;
-	lvs_req->base_bdev = bs_dev->get_base_bdev(bs_dev);
-	lvs_req->cb_fn = cb_fn;
-	lvs_req->cb_arg = cb_arg;
-
-	if (lvs_req->bs_md_dev == NULL) { // No md device given
-		rc = spdk_lvs_init(bs_dev, &opts, _vbdev_lvs_create_cb, lvs_req);
-	} else {
-		rc = spdk_lvs_init_with_md(bs_dev, bs_md_dev, &opts, _vbdev_lvs_create_cb, lvs_req);
-	}
-	if (rc < 0) {
-		free(lvs_req);
-		bs_dev->destroy(bs_dev);
-		return rc;
-	}
-
-	return 0;
+	return _vbdev_lvs_create_or_load(true, base_bdev_name, base_md_bdev_name, 
+		 &opts, cb_fn, cb_arg);
 }
 
 int
@@ -318,9 +451,52 @@ vbdev_lvs_create(const char *base_bdev_name, const char *name, uint32_t cluster_
 
 int
 vbdev_lvs_create_with_md(const char *base_bdev_name, const char *base_md_bdev_name, const char *name, uint32_t cluster_sz,
-             enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+		 enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	return _vbdev_lvs_create(base_bdev_name, base_md_bdev_name, name, cluster_sz, clear_method, cb_fn, cb_arg);
+}
+
+static int
+_vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name, const char *name,
+		 spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	//AK: TODO - opts will always have the default values set for clear and cluster size
+	//	even if they were changed when this lvs previously existed.
+	struct spdk_lvs_opts opts;
+	int len;
+
+	if (base_bdev_name == NULL) {
+		SPDK_ERRLOG("missing base_bdev_name param\n");
+		return -EINVAL;
+	}
+	if (name == NULL) {
+		SPDK_ERRLOG("missing name param\n");
+		return -EINVAL;
+	}
+	
+	len = strnlen(name, SPDK_LVS_NAME_MAX);
+
+	if (len == 0 || len == SPDK_LVS_NAME_MAX) {
+		SPDK_ERRLOG("name must be between 1 and %d characters\n", SPDK_LVS_NAME_MAX - 1);
+		return -EINVAL;
+	}
+	snprintf(opts.name, sizeof(opts.name), "%s", name);
+
+	return _vbdev_lvs_create_or_load(false, base_bdev_name, base_md_bdev_name, 
+		 &opts, cb_fn, cb_arg);
+}
+
+int
+vbdev_lvs_load(const char *base_bdev_name, const char *name,
+		 spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	return _vbdev_lvs_load(base_bdev_name, NULL, name, cb_fn, cb_arg);
+}
+int
+vbdev_lvs_load_with_md(const char *base_bdev_name, const char *base_md_bdev_name, const char *name,
+		 spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	return _vbdev_lvs_load(base_bdev_name, base_md_bdev_name, name, cb_fn, cb_arg);
 }
 
 static void

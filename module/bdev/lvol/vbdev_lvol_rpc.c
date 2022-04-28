@@ -82,13 +82,14 @@ static void
 free_rpc_bdev_lvol_create_lvstore(struct rpc_bdev_lvol_create_lvstore *req)
 {
 	free(req->bdev_name);
+	free(req->md_bdev_name);
 	free(req->lvs_name);
 	free(req->clear_method);
 }
 
 static const struct spdk_json_object_decoder rpc_bdev_lvol_create_lvstore_decoders[] = {
 	{"bdev_name", offsetof(struct rpc_bdev_lvol_create_lvstore, bdev_name), spdk_json_decode_string},
-	{"md_bdev_name", offsetof(struct rpc_bdev_lvol_create_lvstore, md_bdev_name), spdk_json_decode_string},
+	{"md_bdev_name", offsetof(struct rpc_bdev_lvol_create_lvstore, md_bdev_name), spdk_json_decode_string, true},
 	{"cluster_sz", offsetof(struct rpc_bdev_lvol_create_lvstore, cluster_sz), spdk_json_decode_uint32, true},
 	{"lvs_name", offsetof(struct rpc_bdev_lvol_create_lvstore, lvs_name), spdk_json_decode_string},
 	{"clear_method", offsetof(struct rpc_bdev_lvol_create_lvstore, clear_method), spdk_json_decode_string, true},
@@ -168,6 +169,92 @@ cleanup:
 }
 SPDK_RPC_REGISTER("bdev_lvol_create_lvstore", rpc_bdev_lvol_create_lvstore, SPDK_RPC_RUNTIME)
 SPDK_RPC_REGISTER_ALIAS_DEPRECATED(bdev_lvol_create_lvstore, construct_lvol_store)
+
+
+struct rpc_bdev_lvol_load_lvstore {
+	char *lvs_name;
+	char *bdev_name;
+	char *md_bdev_name;
+	//AK: Daniel - add another name for RO dev
+};
+static void
+free_rpc_bdev_lvol_load_lvstore(struct rpc_bdev_lvol_load_lvstore *req)
+{
+	free(req->bdev_name);
+	free(req->md_bdev_name);
+	free(req->lvs_name);
+	//AK: Daniel - free the name for the RO dev
+}
+
+static const struct spdk_json_object_decoder rpc_bdev_lvol_load_lvstore_decoders[] = {
+	{"bdev_name", offsetof(struct rpc_bdev_lvol_load_lvstore, bdev_name), spdk_json_decode_string},
+	{"md_bdev_name", offsetof(struct rpc_bdev_lvol_load_lvstore, md_bdev_name), spdk_json_decode_string},
+	{"lvs_name", offsetof(struct rpc_bdev_lvol_load_lvstore, lvs_name), spdk_json_decode_string}
+	//AK: Daniel - add decoder for the RO device
+};
+
+//AK: TODO - remove if not needed
+/*
+static void
+rpc_lvol_store_construct_cb(void *cb_arg, struct spdk_lvol_store *lvol_store, int lvserrno)
+{
+	struct spdk_json_write_ctx *w;
+	char lvol_store_uuid[SPDK_UUID_STRING_LEN];
+	struct spdk_jsonrpc_request *request = cb_arg;
+
+	if (lvserrno != 0) {
+		goto invalid;
+	}
+
+	spdk_uuid_fmt_lower(lvol_store_uuid, sizeof(lvol_store_uuid), &lvol_store->uuid);
+
+	w = spdk_jsonrpc_begin_result(request);
+	spdk_json_write_string(w, lvol_store_uuid);
+	spdk_jsonrpc_end_result(request, w);
+	return;
+
+invalid:
+	spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+					 spdk_strerror(-lvserrno));
+}
+*/
+
+static void
+rpc_bdev_lvol_load_lvstore(struct spdk_jsonrpc_request *request,
+			     const struct spdk_json_val *params)
+{
+	struct rpc_bdev_lvol_load_lvstore req = {};
+	int rc = 0;
+
+	if (spdk_json_decode_object(params, rpc_bdev_lvol_load_lvstore_decoders,
+				    SPDK_COUNTOF(rpc_bdev_lvol_load_lvstore_decoders),
+				    &req)) {
+		SPDK_INFOLOG(lvol_rpc, "spdk_json_decode_object failed\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "spdk_json_decode_object failed");
+		goto cleanup;
+	}
+
+	//AK: Daniel - Add name argument for the RO dev
+	if (req.md_bdev_name != NULL) {
+		rc = vbdev_lvs_load_with_md(req.bdev_name, req.md_bdev_name, req.lvs_name, 
+				rpc_lvol_store_construct_cb, request);
+	} else {
+		rc = vbdev_lvs_load(req.bdev_name, req.lvs_name, 
+				rpc_lvol_store_construct_cb, request);
+	}
+	if (rc < 0) {
+		spdk_jsonrpc_send_error_response(request, -rc, spdk_strerror(rc));
+		goto cleanup;
+	}
+	free_rpc_bdev_lvol_load_lvstore(&req);
+
+	return;
+
+cleanup:
+	free_rpc_bdev_lvol_load_lvstore(&req);
+}
+SPDK_RPC_REGISTER("bdev_lvol_load_lvstore", rpc_bdev_lvol_load_lvstore, SPDK_RPC_RUNTIME)
 
 struct rpc_bdev_lvol_rename_lvstore {
 	char *old_name;

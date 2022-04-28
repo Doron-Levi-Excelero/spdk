@@ -8,6 +8,7 @@ def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, md_bdev_name=None, clu
     Args:
         bdev_name: bdev on which to construct logical volume store
         lvs_name: name of the logical volume store to create
+        md_bdev_name: bdev on which to construct the metadata (optional)
         cluster_sz: cluster size of the logical volume store in bytes (optional)
         clear_method: Change clear method for data region. Available: none, unmap, write_zeroes (optional)
 
@@ -23,6 +24,19 @@ def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, md_bdev_name=None, clu
         params['md_bdev_name'] = md_bdev_name
     return client.call('bdev_lvol_create_lvstore', params)
 
+def bdev_lvol_load_lvstore(client, bdev_name, md_bdev_name, lvs_name):
+    """Load a logical volume store.
+
+    Args:
+        bdev_name: bdev from which to load the data of logical volume store
+        md_bdev_name: bdev from which to load the metadata
+        lvs_name: name of the logical volume store to set after loading        
+
+    Returns:
+        UUID of created logical volume store.
+    """
+    params = {'bdev_name': bdev_name, 'lvs_name': lvs_name, 'md_bdev_name': md_bdev_name}
+    return client.call('bdev_lvol_load_lvstore', params)
 
 @deprecated_alias('rename_lvol_store')
 def bdev_lvol_rename_lvstore(client, old_name, new_name):
