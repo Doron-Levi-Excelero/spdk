@@ -268,7 +268,7 @@ _vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, con
 		rc = spdk_bdev_create_bs_dev_ext(base_md_bdev_name, vbdev_lvs_base_bdev_event_cb,
 						 NULL, &bs_md_dev);
 		if (rc < 0) {
-			SPDK_ERRLOG("Cannot create blobstore device\n");
+			SPDK_ERRLOG("Cannot create metadata blobstore device\n");
 			free(lvs_req);
 			return rc;
 		}
@@ -276,7 +276,6 @@ _vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, con
 	} /*else {
 		lvs_req->bs_md_dev = NULL;
 	}*/
-
 
 	rc = spdk_bdev_create_bs_dev_ext(base_bdev_name, vbdev_lvs_base_bdev_event_cb,
 					 NULL, &bs_dev);

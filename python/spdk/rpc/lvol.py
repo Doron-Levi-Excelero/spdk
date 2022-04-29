@@ -8,6 +8,7 @@ def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, md_bdev_name=None, clu
     Args:
         bdev_name: bdev on which to construct logical volume store
         lvs_name: name of the logical volume store to create
+        md_bdev_name: bdev on which to construct the metadata (optional)
         cluster_sz: cluster size of the logical volume store in bytes (optional)
         clear_method: Change clear method for data region. Available: none, unmap, write_zeroes (optional)
 
