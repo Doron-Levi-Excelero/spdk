@@ -1552,13 +1552,13 @@ _vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name)
 
 	if (base_bdev_name == NULL) {
 		SPDK_ERRLOG("missing base_bdev_name param\n");
-		return -EINVAL;
+		return;
 	}
 
 	lvs_req = calloc(1, sizeof(*lvs_req));
 	if (!lvs_req) {
 		SPDK_ERRLOG("Cannot alloc memory for vbdev lvol store request pointer\n");
-		return -ENOMEM;
+		return;
 	}
 
 	if (base_md_bdev_name != NULL) {	// Optional usage of MD device
@@ -1567,7 +1567,7 @@ _vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name)
 		if (rc < 0) {
 			SPDK_ERRLOG("Cannot create metadata blobstore device\n");
 			free(lvs_req);
-			return rc;
+			return;
 		}
 		lvs_req->bs_md_dev = bs_md_dev;
 	} else {
@@ -1582,16 +1582,14 @@ _vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name)
 			bs_md_dev->destroy(bs_md_dev);
 		}
 		free(lvs_req);
-		return rc;
+		return;
 	}
 
 	lvs_req->bs_dev = bs_dev;
 	lvs_req->base_bdev = bs_dev->get_base_bdev(bs_dev);
 
-	g_lvol_if->
-
 	if (lvs_req->bs_md_dev == NULL) { // No md device given
-		spdk_lvs_load(bs_dev, &opts, _vbdev_lvs_load_cb, lvs_req);
+		spdk_lvs_load(bs_dev, _vbdev_lvs_load_cb, lvs_req);
 	} else {
 		spdk_lvs_load_with_md(bs_dev, bs_md_dev, _vbdev_lvs_load_cb, lvs_req);
 	}
