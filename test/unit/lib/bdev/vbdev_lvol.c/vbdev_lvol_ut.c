@@ -224,6 +224,38 @@ spdk_blob_is_thin_provisioned(struct spdk_blob *blob)
 static struct spdk_lvol *_lvol_create(struct spdk_lvol_store *lvs);
 
 void
+spdk_lvs_load_with_md(struct spdk_bs_dev *dev, struct spdk_bs_dev *bs_md_dev,
+	      spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	// TODO: add unitest functionality
+	struct spdk_lvol_store *lvs = NULL;
+	int i;
+	int lvserrno = g_lvserrno;
+
+	if (lvserrno != 0) {
+		/* On error blobstore destroys bs_dev itself,
+		 * by puttin back io channels.
+		 * This operation is asynchronous, and completed
+		 * after calling the callback for lvol. */
+		cb_fn(cb_arg, g_lvol_store, lvserrno);
+		dev->destroy(dev);
+		return;
+	}
+
+	lvs = calloc(1, sizeof(*lvs));
+	SPDK_CU_ASSERT_FATAL(lvs != NULL);
+	TAILQ_INIT(&lvs->lvols);
+	TAILQ_INIT(&lvs->pending_lvols);
+	spdk_uuid_generate(&lvs->uuid);
+	lvs->bs_dev = dev;
+	for (i = 0; i < g_num_lvols; i++) {
+		_lvol_create(lvs);
+	}
+
+	cb_fn(cb_arg, lvs, lvserrno);
+}
+
+void
 spdk_lvs_load(struct spdk_bs_dev *dev,
 	      spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
