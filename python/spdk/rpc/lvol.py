@@ -24,7 +24,7 @@ def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, md_bdev_name=None, clu
         params['md_bdev_name'] = md_bdev_name
     return client.call('bdev_lvol_create_lvstore', params)
 
-def bdev_lvol_load_lvstore(client, bdev_name, md_bdev_name):
+def bdev_lvol_load_lvstore(client, bdev_name, md_bdev_name=None):
     """Load a logical volume store.
 
     Args:
@@ -34,7 +34,9 @@ def bdev_lvol_load_lvstore(client, bdev_name, md_bdev_name):
     Returns:
         UUID of created logical volume store.
     """
-    params = {'bdev_name': bdev_name, 'md_bdev_name': md_bdev_name}
+    params = {'bdev_name': bdev_name}
+    if md_bdev_name:
+        params['md_bdev_name'] = md_bdev_name
     return client.call('bdev_lvol_load_lvstore', params)
 
 @deprecated_alias('rename_lvol_store')
