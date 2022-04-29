@@ -24,6 +24,18 @@ def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, md_bdev_name=None, clu
         params['md_bdev_name'] = md_bdev_name
     return client.call('bdev_lvol_create_lvstore', params)
 
+def bdev_lvol_load_lvstore(client, bdev_name, md_bdev_name):
+    """Load a logical volume store.
+
+    Args:
+        bdev_name: bdev from which to load the data of logical volume store
+        md_bdev_name: bdev from which to load the metadata
+
+    Returns:
+        UUID of created logical volume store.
+    """
+    params = {'bdev_name': bdev_name, 'md_bdev_name': md_bdev_name}
+    return client.call('bdev_lvol_load_lvstore', params)
 
 @deprecated_alias('rename_lvol_store')
 def bdev_lvol_rename_lvstore(client, old_name, new_name):
