@@ -4603,7 +4603,7 @@ bs_opts_copy(struct spdk_bs_opts *src, struct spdk_bs_opts *dst)
 }
 
 static void
-_spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *o,
+_spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev *back_dev, struct spdk_bs_opts *o,
 	     spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_blob_store	*bs;
@@ -4665,14 +4665,14 @@ void
 spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *o,
          spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-    _spdk_bs_load(dev, NULL, o, cb_fn, cb_arg);
+    _spdk_bs_load(dev, NULL, NULL, o, cb_fn, cb_arg);
 }
 
 void
-spdk_bs_load_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *o,
+spdk_bs_load_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev *back_dev, struct spdk_bs_opts *o,
          spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-    _spdk_bs_load(dev, md_dev, o, cb_fn, cb_arg);
+    _spdk_bs_load(dev, md_dev, back, o, cb_fn, cb_arg);
 }
 
 /* END spdk_bs_load */

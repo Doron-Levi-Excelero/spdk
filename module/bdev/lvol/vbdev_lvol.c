@@ -1594,10 +1594,11 @@ error:
 }
 
 static void
-_vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+_vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name, const char *base_back_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_bs_dev *bs_dev;
 	struct spdk_bs_dev *bs_md_dev = NULL;
+	struct spdk_bs_dev *bs_back_dev = NULL;
 	struct spdk_lvs_with_handle_req *lvs_req;
 	int rc;
 
@@ -1628,12 +1629,32 @@ _vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name, spdk_
 		lvs_req->bs_md_dev = NULL;
 	}
 
+	if (base_back_bdev_name != NULL) {	// Optional usage of backing device
+		rc = spdk_bdev_create_bs_dev_ext(base_back_bdev_name, vbdev_lvs_base_bdev_event_cb,
+						 NULL, &bs_back_dev);
+		if (rc < 0) {
+			SPDK_ERRLOG("Cannot create back blobstore device\n");
+			if (bs_md_dev != NULL) { // Cleanup MD dev if created
+				bs_md_dev->destroy(bs_md_dev);
+			}
+			free(lvs_req);
+			return;
+		}
+		lvs_req->bs_back_dev = bs_back_dev;
+	} else {
+		lvs_req->bs_back_dev = NULL;
+	}
+
+
 	rc = spdk_bdev_create_bs_dev_ext(base_bdev_name, vbdev_lvs_base_bdev_event_cb,
 					 NULL, &bs_dev);
 	if (rc < 0) {
 		SPDK_ERRLOG("Cannot create blobstore device\n");
 		if (bs_md_dev != NULL) { // Cleanup MD dev if created
 			bs_md_dev->destroy(bs_md_dev);
+		}
+		if (bs_back_dev != NULL) { // Cleanup back dev if created
+			bs_back_dev->destroy(bs_back_dev);
 		}
 		free(lvs_req);
 		return;
@@ -1652,13 +1673,13 @@ _vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name, spdk_
 void
 vbdev_lvs_load(const char *base_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	_vbdev_lvs_load(base_bdev_name, NULL, cb_fn, cb_arg);
+	_vbdev_lvs_load(base_bdev_name, NULL, NULL, cb_fn, cb_arg);
 }
 
 void
-vbdev_lvs_load_with_md(const char *base_bdev_name, const char *base_md_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+vbdev_lvs_load_with_md(const char *base_bdev_name, const char *base_md_bdev_name, const char *base_back_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	_vbdev_lvs_load(base_bdev_name, base_md_bdev_name, cb_fn, cb_arg);
+	_vbdev_lvs_load(base_bdev_name, base_md_bdev_name, base_back_bdev_name, cb_fn, cb_arg);
 }
 
 struct spdk_lvol *

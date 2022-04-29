@@ -390,7 +390,7 @@ lvs_bs_opts_init(struct spdk_bs_opts *opts)
 }
 
 static void
-_spdk_lvs_load(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev,
+_spdk_lvs_load(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_bs_dev *bs_back_dev,
 	      spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_lvs_with_handle_req *req;
@@ -418,8 +418,12 @@ _spdk_lvs_load(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev,
 	lvs_bs_opts_init(&opts);
 
 	if (bs_md_dev != NULL) {	// Ensure we only load the correct bstype
-		snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "LVOLSTOREMD");
-		spdk_bs_load_with_md_dev(bs_dev, bs_md_dev, &opts, lvs_load_cb, req);
+		if (bs_back_dev != NULL) {
+			snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "LVOLSTOREMDB");
+		} else {
+			snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "LVOLSTOREMD");
+		}
+		spdk_bs_load_with_md_dev(bs_dev, bs_md_dev, bs_back_dev, &opts, lvs_load_cb, req);
 	} else {
 		snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "LVOLSTORE");
 		spdk_bs_load(bs_dev, &opts, lvs_load_cb, req);
@@ -433,10 +437,10 @@ spdk_lvs_load(struct spdk_bs_dev *bs_dev,
 	_spdk_lvs_load(bs_dev, NULL, cb_fn, cb_arg);
 }
 void
-spdk_lvs_load_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev,
+spdk_lvs_load_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_bs_dev *bs_back_dev,
 		 spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	_spdk_lvs_load(bs_dev, bs_md_dev, cb_fn, cb_arg);
+	_spdk_lvs_load(bs_dev, bs_md_dev, bs_back_dev, cb_fn, cb_arg);
 }
 
 static void

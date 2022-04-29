@@ -178,7 +178,7 @@ struct rpc_bdev_lvol_load_lvstore {
 	//char *lvs_name;
 	char *bdev_name;
 	char *md_bdev_name;
-	//AK: Daniel - add another name for RO dev
+	char *back_bdev_name;
 };
 
 static void
@@ -186,13 +186,15 @@ free_rpc_bdev_lvol_load_lvstore(struct rpc_bdev_lvol_load_lvstore *req)
 {
 	free(req->bdev_name);
 	free(req->md_bdev_name);
+	free(req->back_bdev_name);
+	//free(req->lvs_name);
 }
 
 static const struct spdk_json_object_decoder rpc_bdev_lvol_load_lvstore_decoders[] = {
 	{"bdev_name", offsetof(struct rpc_bdev_lvol_load_lvstore, bdev_name), spdk_json_decode_string},
 	{"md_bdev_name", offsetof(struct rpc_bdev_lvol_load_lvstore, md_bdev_name), spdk_json_decode_string, true}
+	{"back_bdev_name", offsetof(struct rpc_bdev_lvol_load_lvstore, back_bdev_name), spdk_json_decode_string, true}
 	//{"lvs_name", offsetof(struct rpc_bdev_lvol_load_lvstore, lvs_name), spdk_json_decode_string}
-	//AK: Daniel - add decoder for the RO device
 };
 
 static void

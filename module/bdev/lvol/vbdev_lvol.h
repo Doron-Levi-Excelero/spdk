@@ -59,7 +59,7 @@ int vbdev_lvs_create_with_md(const char *base_bdev_name, const char *base_md_bde
              enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
 
 void vbdev_lvs_load(const char *base_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
-void vbdev_lvs_load_with_md(const char *base_bdev_name, const char *base_md_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
+void vbdev_lvs_load_with_md(const char *base_bdev_name, const char *base_md_bdev_name, const char *base_back_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
 
 void vbdev_lvs_destruct(struct spdk_lvol_store *lvs, spdk_lvs_op_complete cb_fn, void *cb_arg);
 void vbdev_lvs_unload(struct spdk_lvol_store *lvs, spdk_lvs_op_complete cb_fn, void *cb_arg);
