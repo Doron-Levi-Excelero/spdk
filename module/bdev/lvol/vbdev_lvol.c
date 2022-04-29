@@ -1638,7 +1638,7 @@ _vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name, const
 	if (lvs_req->bs_md_dev == NULL) { // No md device given
 		spdk_lvs_load(bs_dev, _vbdev_lvs_load_cb, lvs_req);
 	} else {
-		spdk_lvs_load_with_md(bs_dev, bs_md_dev, _vbdev_lvs_load_cb, lvs_req);
+		spdk_lvs_load_with_md(bs_dev, bs_md_dev, bs_back_dev, _vbdev_lvs_load_cb, lvs_req);
 	}
 }
 

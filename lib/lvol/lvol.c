@@ -434,7 +434,7 @@ void
 spdk_lvs_load(struct spdk_bs_dev *bs_dev,
 		 spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	_spdk_lvs_load(bs_dev, NULL, cb_fn, cb_arg);
+	_spdk_lvs_load(bs_dev, NULL, NULL, cb_fn, cb_arg);
 }
 void
 spdk_lvs_load_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_bs_dev *bs_back_dev,
