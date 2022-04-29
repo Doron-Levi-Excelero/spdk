@@ -270,7 +270,7 @@ struct spdk_io_channel *spdk_lvol_get_io_channel(struct spdk_lvol *lvol);
 void spdk_lvs_load(struct spdk_bs_dev *bs_dev, spdk_lvs_op_with_handle_complete cb_fn,
 		   void *cb_arg);
 
-void spdk_lvs_load_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev,
+void spdk_lvs_load_with_md(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct spdk_bs_dev *bs_back_dev,
          spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg);
 
 /**
