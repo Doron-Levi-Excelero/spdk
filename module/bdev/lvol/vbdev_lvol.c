@@ -1451,6 +1451,164 @@ vbdev_lvs_examine(struct spdk_bdev *bdev)
 	spdk_lvs_load(bs_dev, _vbdev_lvs_examine_cb, req);
 }
 
+// Nothing to do if we fail
+static void _vbdev_lvs_load_failed(void *cb_arg, int lvserrno)
+{}
+
+static void
+_vbdev_lvs_load_finish(void *cb_arg, struct spdk_lvol *lvol, int lvolerrno)
+{
+	struct spdk_lvol_store *lvs = cb_arg;
+
+	if (lvolerrno != 0) {
+		SPDK_ERRLOG("Error opening lvol %s\n", lvol->unique_id);
+		TAILQ_REMOVE(&lvs->lvols, lvol, link);
+		lvs->lvol_count--;
+		free(lvol);
+		goto end;
+	}
+
+	if (_create_lvol_disk(lvol, false)) {
+		SPDK_ERRLOG("Cannot create bdev for lvol %s\n", lvol->unique_id);
+		lvs->lvol_count--;
+		SPDK_INFOLOG(vbdev_lvol, "Opening lvol %s failed\n", lvol->unique_id);
+		goto end;
+	}
+
+	lvs->lvols_opened++;
+	SPDK_INFOLOG(vbdev_lvol, "Opening lvol %s succeeded\n", lvol->unique_id);
+
+end:
+
+	if (lvs->lvols_opened >= lvs->lvol_count) {
+		SPDK_INFOLOG(vbdev_lvol, "Opening lvols finished\n");
+	}
+}
+
+static void
+_vbdev_lvs_load_cb(void *arg, struct spdk_lvol_store *lvol_store, int lvserrno)
+{
+	struct lvol_store_bdev *lvs_bdev;
+	struct spdk_lvs_with_handle_req *req = (struct spdk_lvs_with_handle_req *)arg;
+	struct spdk_lvol *lvol, *tmp;
+
+	if (lvserrno == -EEXIST) {
+		SPDK_INFOLOG(vbdev_lvol,
+			     "Name for lvolstore on device %s conflicts with name for already loaded lvs\n",
+			     req->base_bdev->name);
+		/* On error blobstore destroys bs_dev itself */
+		goto end;
+	} else if (lvserrno != 0) {
+		SPDK_INFOLOG(vbdev_lvol, "Lvol store not found on %s\n", req->base_bdev->name);
+		/* On error blobstore destroys bs_dev itself */
+		goto end;
+	}
+
+	// Check if we need to claim the bs_devs or
+	lvserrno = spdk_bs_bdev_claim(lvol_store->bs_dev, &g_lvol_if);
+	if (lvserrno != 0) {
+		SPDK_INFOLOG(vbdev_lvol, "Lvol store base bdev already claimed by another bdev\n");
+		spdk_lvs_unload(lvol_store, _vbdev_lvs_load_failed, NULL);
+		goto end;
+	}
+
+	lvs_bdev = calloc(1, sizeof(*lvs_bdev));
+	if (!lvs_bdev) {
+		SPDK_ERRLOG("Cannot alloc memory for lvs_bdev\n");
+		spdk_lvs_unload(lvol_store, _vbdev_lvs_load_failed, NULL);
+		goto end;
+	}
+
+	lvs_bdev->lvs = lvol_store;
+	lvs_bdev->bdev = req->base_bdev;
+
+	TAILQ_INSERT_TAIL(&g_spdk_lvol_pairs, lvs_bdev, lvol_stores);
+
+	SPDK_INFOLOG(vbdev_lvol, "Lvol store found on %s - begin parsing\n",
+		     req->base_bdev->name);
+
+	lvol_store->lvols_opened = 0;
+
+	if (!TAILQ_EMPTY(&lvol_store->lvols)) {
+		/* Open all lvols */
+		TAILQ_FOREACH_SAFE(lvol, &lvol_store->lvols, link, tmp) {
+			spdk_lvol_open(lvol, _vbdev_lvs_load_finish, lvol_store);
+		}
+	}
+
+	SPDK_INFOLOG(vbdev_lvol, "Lvol store load done\n");
+
+end:
+	free(req);
+}
+
+static void
+_vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name)
+{
+	struct spdk_bs_dev *bs_dev;
+	struct spdk_bs_dev *bs_md_dev = NULL;
+	struct spdk_lvs_with_handle_req *lvs_req;
+	int rc;
+
+	if (base_bdev_name == NULL) {
+		SPDK_ERRLOG("missing base_bdev_name param\n");
+		return -EINVAL;
+	}
+
+	lvs_req = calloc(1, sizeof(*lvs_req));
+	if (!lvs_req) {
+		SPDK_ERRLOG("Cannot alloc memory for vbdev lvol store request pointer\n");
+		return -ENOMEM;
+	}
+
+	if (base_md_bdev_name != NULL) {	// Optional usage of MD device
+		rc = spdk_bdev_create_bs_dev_ext(base_md_bdev_name, vbdev_lvs_base_bdev_event_cb,
+						 NULL, &bs_md_dev);
+		if (rc < 0) {
+			SPDK_ERRLOG("Cannot create metadata blobstore device\n");
+			free(lvs_req);
+			return rc;
+		}
+		lvs_req->bs_md_dev = bs_md_dev;
+	} else {
+		lvs_req->bs_md_dev = NULL;
+	}
+
+	rc = spdk_bdev_create_bs_dev_ext(base_bdev_name, vbdev_lvs_base_bdev_event_cb,
+					 NULL, &bs_dev);
+	if (rc < 0) {
+		SPDK_ERRLOG("Cannot create blobstore device\n");
+		if (bs_md_dev != NULL) { // Cleanup MD dev if created
+			bs_md_dev->destroy(bs_md_dev);
+		}
+		free(lvs_req);
+		return rc;
+	}
+
+	lvs_req->bs_dev = bs_dev;
+	lvs_req->base_bdev = bs_dev->get_base_bdev(bs_dev);
+
+	g_lvol_if->
+
+	if (lvs_req->bs_md_dev == NULL) { // No md device given
+		spdk_lvs_load(bs_dev, &opts, _vbdev_lvs_load_cb, lvs_req);
+	} else {
+		spdk_lvs_load_with_md(bs_dev, bs_md_dev, _vbdev_lvs_load_cb, lvs_req);
+	}
+}
+
+void
+vbdev_lvs_load(const char *base_bdev_name)
+{
+	_vbdev_lvs_load(base_bdev_name, NULL);
+}
+
+void
+vbdev_lvs_load_with_md(const char *base_bdev_name, const char *base_md_bdev_name)
+{
+	_vbdev_lvs_load(base_bdev_name, base_md_bdev_name);
+}
+
 struct spdk_lvol *
 vbdev_lvol_get_from_bdev(struct spdk_bdev *bdev)
 {
