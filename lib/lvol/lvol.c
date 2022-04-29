@@ -659,10 +659,10 @@ _spdk_lvs_init(struct spdk_bs_dev *bs_dev, struct spdk_bs_dev *bs_md_dev, struct
 	SPDK_INFOLOG(lvol, "Initializing lvol store\n");
 
 	if (bs_md_dev != NULL) {	// Ensure we init the correct bstype
-		if (bs_back_dev != NULL) {
-			snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "LVOLSTOREMD");
-		} else {				// Added B for required back dev
+		if (bs_back_dev != NULL) {	// Added B for required back dev
 			snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "LVOLSTOREMDB");
+		} else {
+			snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "LVOLSTOREMD");
 		}
 		spdk_bs_init_with_md_dev(bs_dev, bs_md_dev, bs_back_dev, &opts, lvs_init_cb, lvs_req);
 	} else {
