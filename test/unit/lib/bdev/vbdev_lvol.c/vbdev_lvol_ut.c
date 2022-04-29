@@ -224,7 +224,7 @@ spdk_blob_is_thin_provisioned(struct spdk_blob *blob)
 static struct spdk_lvol *_lvol_create(struct spdk_lvol_store *lvs);
 
 void
-spdk_lvs_load_with_md(struct spdk_bs_dev *dev, struct spdk_bs_dev *bs_md_dev,
+spdk_lvs_load_with_md(struct spdk_bs_dev *dev, struct spdk_bs_dev *bs_md_dev, struct spdk_bs_dev *bs_back_dev,
 	      spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	// TODO: add unitest functionality

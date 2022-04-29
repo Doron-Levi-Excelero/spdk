@@ -4674,7 +4674,7 @@ void
 spdk_bs_load_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev *back_dev, struct spdk_bs_opts *o,
          spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-    _spdk_bs_load(dev, md_dev, back, o, cb_fn, cb_arg);
+    _spdk_bs_load(dev, md_dev, back_dev, o, cb_fn, cb_arg);
 }
 
 /* END spdk_bs_load */

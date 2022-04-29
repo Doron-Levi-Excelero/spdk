@@ -52,6 +52,7 @@ struct hello_context_t {
 	struct spdk_io_channel *channel;
 	struct spdk_bs_dev *bs_dev;
 	struct spdk_bs_dev *bs_md_dev;
+	struct spdk_bs_dev *bs_back_dev;
 	uint8_t *read_buff;
 	uint8_t *write_buff;
 	uint64_t io_unit_size;
@@ -276,6 +277,7 @@ intermediate_unload_complete(void *arg1, int bserrno)
 	hello_context->bs = NULL;
 	hello_context->bs_dev = NULL;
 	hello_context->bs_md_dev = NULL;
+	hello_context->bs_back_dev = NULL;
 
 	rc = spdk_bdev_create_bs_dev_ext("Malloc0", base_bdev_event_cb, NULL, &bs_dev);
 	if (rc != 0) {
@@ -295,7 +297,7 @@ intermediate_unload_complete(void *arg1, int bserrno)
 	}
 	hello_context->bs_md_dev = bs_dev;
 
-	spdk_bs_load_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, NULL, load_complete, hello_context);
+	spdk_bs_load_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, NULL, NULL,load_complete, hello_context);
 }
 
 /*

@@ -192,7 +192,7 @@ free_rpc_bdev_lvol_load_lvstore(struct rpc_bdev_lvol_load_lvstore *req)
 
 static const struct spdk_json_object_decoder rpc_bdev_lvol_load_lvstore_decoders[] = {
 	{"bdev_name", offsetof(struct rpc_bdev_lvol_load_lvstore, bdev_name), spdk_json_decode_string},
-	{"md_bdev_name", offsetof(struct rpc_bdev_lvol_load_lvstore, md_bdev_name), spdk_json_decode_string, true}
+	{"md_bdev_name", offsetof(struct rpc_bdev_lvol_load_lvstore, md_bdev_name), spdk_json_decode_string, true},
 	{"back_bdev_name", offsetof(struct rpc_bdev_lvol_load_lvstore, back_bdev_name), spdk_json_decode_string, true}
 	//{"lvs_name", offsetof(struct rpc_bdev_lvol_load_lvstore, lvs_name), spdk_json_decode_string}
 };
@@ -239,7 +239,7 @@ rpc_bdev_lvol_load_lvstore(struct spdk_jsonrpc_request *request,
 
 	//AK: Daniel - Add name argument for the RO dev
 	if (req.md_bdev_name != NULL) {
-		vbdev_lvs_load_with_md(req.bdev_name, req.md_bdev_name, rpc_lvol_store_load_cb, request);
+		vbdev_lvs_load_with_md(req.bdev_name, req.md_bdev_name, req.back_bdev_name, rpc_lvol_store_load_cb, request);
 	} else {
 		vbdev_lvs_load(req.bdev_name, rpc_lvol_store_load_cb, request);
 	}
