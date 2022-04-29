@@ -180,6 +180,20 @@ spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts,
 
 	cb_fn(cb_arg, bs, ut_dev->load_status);
 }
+void
+spdk_bs_load_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *opts,
+	     spdk_bs_op_with_handle_complete cb_fn, void *cb_arg)
+{
+	// TODO: add unitest functionality
+	struct lvol_ut_bs_dev *ut_dev = SPDK_CONTAINEROF(dev, struct lvol_ut_bs_dev, bs_dev);
+	struct spdk_blob_store *bs = NULL;
+
+	if (ut_dev->load_status == 0) {
+		bs = ut_dev->bs;
+	}
+
+	cb_fn(cb_arg, bs, ut_dev->load_status);
+}
 
 struct spdk_io_channel *spdk_bs_alloc_io_channel(struct spdk_blob_store *bs)
 {
