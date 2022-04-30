@@ -1801,12 +1801,14 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     def bdev_lvol_load_lvstore(args):
         print_json(rpc.lvol.bdev_lvol_load_lvstore(args.client,
                                                      bdev_name=args.bdev_name,
-                                                     md_bdev_name=args.md_bdev_name))
+                                                     md_bdev_name=args.md_bdev_name,
+                                                     back_bdev_name=args.back_bdev_name))
 
     p = subparsers.add_parser('bdev_lvol_load_lvstore', aliases=['load_lvol_store'],
                               help='Load a logical volume store from base and metadata bdevs')
     p.add_argument('bdev_name', help='base bdev name')
-    p.add_argument('-md', '--md_bdev_name', help='base bdev name used for metadata', default=None, required=False)
+    p.add_argument('-md', '--md_bdev_name', help='base bdev name used for metadata (optional)', default=None, required=False)
+    p.add_argument('-bd', '--back_bdev_name', help='base bdev name used for backing device (optional)', default=None, required=False)
     p.set_defaults(func=bdev_lvol_load_lvstore)
 
     def bdev_lvol_unload_lvstore(args):
