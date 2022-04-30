@@ -3422,7 +3422,7 @@ struct spdk_bs_load_ctx {
 };
 
 static int
-bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *opts, struct spdk_blob_store **_bs,
+bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev *back_dev, struct spdk_bs_opts *opts, struct spdk_blob_store **_bs,
 	 struct spdk_bs_load_ctx **_ctx)
 {
 	struct spdk_blob_store	*bs;
@@ -3489,6 +3489,7 @@ bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opt
 	TAILQ_INIT(&bs->snapshots);
 	bs->dev = dev;
 	bs->md_dev = md_dev;
+	bs->back_dev = back_dev;
 	bs->md_thread = spdk_get_thread();
 	assert(bs->md_thread != NULL);
 
@@ -4631,7 +4632,7 @@ _spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 		return;
 	}
 
-	err = bs_alloc(dev, md_dev, &opts, &bs, &ctx);
+	err = bs_alloc(dev, md_dev, back_dev, &opts, &bs, &ctx);
 	if (err) {
 		dev->destroy(dev);
 		cb_fn(cb_arg, NULL, err);
@@ -5022,7 +5023,7 @@ spdk_bs_dump(struct spdk_bs_dev *dev, FILE *fp, spdk_bs_dump_print_xattr print_x
 
 	spdk_bs_opts_init(&opts, sizeof(opts));
 
-	err = bs_alloc(dev, NULL, &opts, &bs, &ctx); // TODO: overload spdk_bs_dump to use separate MD device for dump
+	err = bs_alloc(dev, NULL, NULL, &opts, &bs, &ctx); // TODO: overload spdk_bs_dump to use separate MD device for dump
 	if (err) {
 		dev->destroy(dev);
 		cb_fn(cb_arg, err);
@@ -5119,14 +5120,12 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 		return;
 	}
 
-	rc = bs_alloc(dev, md_dev, &opts, &bs, &ctx);
+	rc = bs_alloc(dev, md_dev, back_dev, &opts, &bs, &ctx);
 	if (rc) {
 		dev->destroy(dev);
 		cb_fn(cb_arg, NULL, rc);
 		return;
 	}
-
-	bs->back_dev = back_dev;
 
 	if (opts.num_md_pages == SPDK_BLOB_OPTS_NUM_MD_PAGES) {
 		/* By default, allocate 1 page per cluster.
@@ -6074,6 +6073,7 @@ bs_snapshot_newblob_sync_cpl(void *cb_arg, int bserrno)
 	}
 
 	/* Create new back_bs_dev for snapshot */
+	// TODO: Do we need to clone the back_bs_dev for this new snapshot, with it's io_channel?
 	origblob->back_bs_dev = bs_create_blob_bs_dev(newblob);
 	if (origblob->back_bs_dev == NULL) {
 		/* return cluster map back to original */
@@ -6110,6 +6110,7 @@ bs_snapshot_freeze_cpl(void *cb_arg, int rc)
 	ctx->frozen = true;
 
 	/* set new back_bs_dev for snapshot */
+	// TODO: Do we need to clone the back_bs_dev again with it's channels?
 	newblob->back_bs_dev = origblob->back_bs_dev;
 	/* Set invalid flags from origblob */
 	newblob->invalid_flags = origblob->invalid_flags;
