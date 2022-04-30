@@ -53,6 +53,7 @@ struct hello_context_t {
 	struct spdk_bs_dev *bs_dev;
 	struct spdk_bs_dev *bs_md_dev;
 	struct spdk_bs_dev *bs_back_dev;
+	struct spdk_bdev_desc *bdev_desc;
 	uint8_t *read_buff;
 	uint8_t *write_buff;
 	uint64_t io_unit_size;
@@ -175,6 +176,8 @@ read_complete(void *arg1, int bserrno)
 	match_res = memcmp(hello_context->write_buff, hello_context->read_buff,
 			   hello_context->io_unit_size);
 	if (match_res) {
+		SPDK_ERRLOG("read fail and data is not expected: %s!\n", hello_context->write_buff);
+		SPDK_ERRLOG("read fail and data found is: %s!\n", hello_context->read_buff);
 		unload_bs(hello_context, "Error in data compare", -1);
 		return;
 	} else {
@@ -297,7 +300,7 @@ intermediate_unload_complete(void *arg1, int bserrno)
 	}
 	hello_context->bs_md_dev = bs_dev;
 
-	spdk_bs_load_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, NULL, NULL,load_complete, hello_context);
+	spdk_bs_load_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, NULL, NULL, load_complete, hello_context);
 }
 
 /*
@@ -359,16 +362,19 @@ blob_write(struct hello_context_t *hello_context)
 	 * transfer 1 io_unit of 4K aligned data at offset 0 in the blob.
 	 */
 	if (hello_context->flavor < 5) {	// Trigger read before write scenario
-		hello_context->write_buff = spdk_malloc(hello_context->io_unit_size,
-							0x1000, NULL, SPDK_ENV_LCORE_ID_ANY,
-							SPDK_MALLOC_DMA);
+		if (hello_context->flavor == 0) {
+			hello_context->write_buff = spdk_malloc(hello_context->io_unit_size,
+								0x1000, NULL, SPDK_ENV_LCORE_ID_ANY,
+								SPDK_MALLOC_DMA);
+		}
 		if (hello_context->write_buff == NULL) {
 			unload_bs(hello_context, "Error in allocating memory",
 				  -ENOMEM);
 			return;
 		}
-
-		memset(hello_context->write_buff, 0x0, hello_context->io_unit_size);	
+		if (hello_context->flavor == 0) {
+			memset(hello_context->write_buff, 0x0, hello_context->io_unit_size);	
+		}
 		hello_context->flavor+=5;
 
 		read_blob(hello_context);
@@ -503,8 +509,12 @@ blob_create_complete(void *arg1, spdk_blob_id blobid, int bserrno)
 static void
 create_blob(struct hello_context_t *hello_context)
 {
+	struct spdk_blob_opts opts = {};
+	spdk_blob_opts_init(&opts, sizeof(opts));
+	opts.thin_provision = true;
 	SPDK_NOTICELOG("entry\n");
-	spdk_bs_create_blob(hello_context->bs, blob_create_complete, hello_context);
+
+	spdk_bs_create_blob_ext(hello_context->bs, &opts, blob_create_complete, hello_context);
 }
 
 /*
@@ -538,6 +548,55 @@ bs_init_complete(void *cb_arg, struct spdk_blob_store *bs,
 	 * time limited.
 	 */
 	create_blob(hello_context);
+}
+
+static void
+bdev_write_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
+{
+	struct hello_context_t *hello_context = cb_arg;
+	int rc;
+	/* Complete the I/O */
+	spdk_bdev_free_io(bdev_io);
+
+	if (success) {
+		SPDK_NOTICELOG("bdev io write completed successfully\n");
+	} else {
+		SPDK_ERRLOG("bdev io write error: %d\n", EIO);
+		spdk_put_io_channel(hello_context->channel);
+		spdk_bdev_close(hello_context->bdev_desc);
+		spdk_app_stop(-1);
+		return;
+	}
+	spdk_put_io_channel(hello_context->channel);
+	spdk_bdev_close(hello_context->bdev_desc);
+	rc = spdk_bdev_create_bs_dev_ext("Malloc2", base_bdev_event_cb, NULL, &hello_context->bs_back_dev);
+	if (rc != 0) {
+		SPDK_ERRLOG("Could not create backing bdev, %s!!\n",
+			    spdk_strerror(-rc));
+		spdk_app_stop(-1);
+		return;
+	}
+	spdk_bs_init_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, hello_context->bs_back_dev, NULL, bs_init_complete, hello_context);
+}
+
+static void setup_data_on_back_dev(struct hello_context_t *hello_context)
+{
+	struct spdk_bdev *bdev;
+	uint32_t blk_size;
+	int rc = spdk_bdev_open_ext("Malloc2", true, base_bdev_event_cb, NULL,
+					&hello_context->bdev_desc);
+	if (rc) assert(true);
+	SPDK_NOTICELOG("Entry\n");
+	/* A bdev pointer is valid while the bdev is opened. */
+	bdev = spdk_bdev_desc_get_bdev(hello_context->bdev_desc);
+	hello_context->channel = spdk_bdev_get_io_channel(hello_context->bdev_desc);
+	blk_size = spdk_bdev_get_block_size(bdev);
+	hello_context->write_buff = spdk_malloc(blk_size,
+					       0x1000, NULL, SPDK_ENV_LCORE_ID_ANY,
+					       SPDK_MALLOC_DMA);
+	snprintf(hello_context->write_buff, blk_size, "%s", "Hello World!\n");
+	rc = spdk_bdev_write(hello_context->bdev_desc, hello_context->channel,
+			     hello_context->write_buff, 0, blk_size, bdev_write_complete, hello_context);
 }
 
 /*
@@ -586,7 +645,7 @@ hello_start(void *arg1)
 			return;
 		}
 		hello_context->bs_md_dev = bs_dev;
-		spdk_bs_init_with_md_dev(hello_context->bs_dev, hello_context->bs_md_dev, NULL, NULL, bs_init_complete, hello_context);
+		setup_data_on_back_dev(hello_context);
 	} else {
 		spdk_bs_init(bs_dev, NULL, bs_init_complete, hello_context);
 	}
