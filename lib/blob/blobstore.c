@@ -54,6 +54,8 @@
 
 static int bs_register_md_thread(struct spdk_blob_store *bs);
 static int bs_unregister_md_thread(struct spdk_blob_store *bs);
+static int bs_register_back_thread(struct spdk_blob_store *bs);
+static int bs_unregister_back_thread(struct spdk_blob_store *bs);
 static void blob_close_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno);
 static void blob_insert_cluster_on_md_thread(struct spdk_blob *blob, uint32_t cluster_num,
 		uint64_t cluster, uint32_t extent, spdk_blob_op_complete cb_fn, void *cb_arg);
@@ -344,6 +346,8 @@ blob_free(struct spdk_blob *blob)
 	xattrs_free(&blob->xattrs);
 	xattrs_free(&blob->xattrs_internal);
 
+	if (blob->back_bs_channel && 0)
+		blob->back_bs_dev->destroy_channel(blob->back_bs_dev, blob->back_bs_channel);
 	if (blob->back_bs_dev) {
 		blob->back_bs_dev->destroy(blob->back_bs_dev);
 	}
@@ -1341,6 +1345,8 @@ blob_load_snapshot_cpl(void *cb_arg, struct spdk_blob *snapshot, int bserrno)
 	struct spdk_blob		*blob = ctx->blob;
 
 	if (bserrno == 0) {
+		if (snapshot->back_bs_channel)
+			blob->back_bs_channel = snapshot->back_bs_channel;
 		blob->back_bs_dev = bs_create_blob_bs_dev(snapshot);
 		if (blob->back_bs_dev == NULL) {
 			bserrno = -ENOMEM;
@@ -1361,12 +1367,14 @@ blob_set_default_backing_dev(struct spdk_blob *blob)
 {
 	if (blob->bs->back_dev) {
 		/* Super blob always gets zeroes as its backing dev. */
-		if (blob->id != blob->bs->super_blob) {
-			blob->back_bs_dev = blob->bs->back_dev->clone(blob->bs->back_dev);
+		if (blob->id != blob->bs->super_blob) {		
+			blob->back_bs_dev = blob->bs->back_dev->clone(blob->bs->back_dev, &blob->back_bs_channel);
+			if (blob->back_bs_channel != blob->bs->back_channel)
+				SPDK_ERRLOG("Values: %p and %p\n", blob->back_bs_channel, blob->bs->back_channel);
 			return (blob->back_bs_dev) ? 0 : -ENOMEM;
 		}
 	}
-
+	blob->back_bs_channel = NULL;
 	blob->back_bs_dev = bs_create_zeroes_dev();
 	return 0;
 }
@@ -1402,6 +1410,7 @@ blob_load_backing_dev(void *cb_arg)
 		}
 	} else {
 		/* standard blob */
+		blob->back_bs_channel = NULL;
 		blob->back_bs_dev = NULL;
 	}
 	blob_load_final(ctx, 0);
@@ -2447,6 +2456,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	uint32_t cluster_start_page;
 	uint32_t cluster_number;
 	int rc;
+	const bool from_back_dev = (blob->parent_id != SPDK_BLOBID_INVALID);
 
 	ch = spdk_io_channel_get_ctx(_ch);
 
@@ -2476,7 +2486,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	ctx->blob = blob;
 	ctx->page = cluster_start_page;
 
-	if (blob->parent_id != SPDK_BLOBID_INVALID) {
+	if (from_back_dev) {
 		ctx->buf = spdk_malloc(blob->bs->cluster_sz, blob->back_bs_dev->blocklen,
 				       NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
 		if (!ctx->buf) {
@@ -2502,8 +2512,10 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	cpl.type = SPDK_BS_CPL_TYPE_BLOB_BASIC;
 	cpl.u.blob_basic.cb_fn = blob_allocate_and_copy_cluster_cpl;
 	cpl.u.blob_basic.cb_arg = ctx;
-
-	ctx->seq = bs_sequence_start(_ch, &cpl);
+	if (from_back_dev)
+		ctx->seq = bs_sequence_start(blob->bs->back_channel, &cpl);
+	else 
+		ctx->seq = bs_sequence_start(_ch, &cpl);
 	if (!ctx->seq) {
 		pthread_mutex_lock(&blob->bs->used_clusters_mutex);
 		bs_release_cluster(blob->bs, ctx->new_cluster);
@@ -2517,7 +2529,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	/* Queue the user op to block other incoming operations */
 	TAILQ_INSERT_TAIL(&ch->need_cluster_alloc, op, link);
 
-	if (blob->parent_id != SPDK_BLOBID_INVALID) {
+	if (from_back_dev) {
 		/* Read cluster from backing device */
 		bs_sequence_read_bs_dev(ctx->seq, blob->back_bs_dev, ctx->buf,
 					bs_dev_page_to_lba(blob->back_bs_dev, cluster_start_page),
@@ -2740,8 +2752,12 @@ blob_request_submit_op_single(struct spdk_io_channel *_ch, struct spdk_blob *blo
 	switch (op_type) {
 	case SPDK_BLOB_READ: {
 		spdk_bs_batch_t *batch;
-
-		batch = bs_batch_open(_ch, &cpl);
+		if (!is_allocated && (blob->back_bs_channel != NULL)) {
+			/* backing dev is separte and need to use it's channel */
+			batch = bs_batch_open(blob->back_bs_channel, &cpl);
+		} else {	// Use regular bs channel
+			batch = bs_batch_open(_ch, &cpl);
+		}
 		if (!batch) {
 			cb_fn(cb_arg, -ENOMEM);
 			return;
@@ -3010,8 +3026,12 @@ blob_request_submit_rw_iov(struct spdk_blob *blob, struct spdk_io_channel *_chan
 
 		if (read) {
 			spdk_bs_sequence_t *seq;
-
-			seq = bs_sequence_start(_channel, &cpl);
+			if (!is_allocated && (blob->back_bs_channel != NULL)) {
+				seq = bs_sequence_start(blob->back_bs_channel, &cpl);
+			}
+			else {
+				seq = bs_sequence_start(_channel, &cpl);
+			}
 			if (!seq) {
 				cb_fn(cb_arg, -ENOMEM);
 				return;
@@ -3163,6 +3183,14 @@ bs_md_channel_create(void *io_device, void *ctx_buf)
     struct spdk_blob_store *bs = SPDK_CONTAINEROF(io_device, struct spdk_blob_store, md_dev);
     // TODO: CASE 123 if bs->md_dev is NULL we call bs_create_common with bs->dev twice?
     return bs_channel_create_common(bs, ctx_buf, bs->md_dev ? bs->md_dev : bs->dev);
+}
+
+static int
+bs_back_channel_create(void *io_device, void *ctx_buf)
+{
+    struct spdk_blob_store *bs = SPDK_CONTAINEROF(io_device, struct spdk_blob_store, back_dev);
+    // TODO: CASE 123 if bs->back_dev is NULL we call bs_create_common with bs->dev twice?
+    return bs_channel_create_common(bs, ctx_buf, bs->back_dev ? bs->back_dev : bs->dev);
 }
 
 static void
@@ -3328,6 +3356,8 @@ bs_free(struct spdk_blob_store *bs)
 	bs_blob_list_free(bs);
 
 	bs_unregister_md_thread(bs);
+	if (bs->back_dev)
+		bs_unregister_back_thread(bs);
 	// TODO: CASE 123 see above
 	spdk_io_device_unregister(bs, _spdk_bs_unregister_cpl);
 }
@@ -3529,10 +3559,15 @@ bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev
 	spdk_io_device_register(&bs->md_dev, bs_md_channel_create, bs_channel_destroy,
 				sizeof(struct spdk_bs_channel), "blobstore_md");
 
+	if (back_dev)
+		spdk_io_device_register(&bs->back_dev, bs_back_channel_create, bs_channel_destroy,
+				sizeof(struct spdk_bs_channel), "blobstore_back");
+
 	spdk_io_device_register(bs, bs_channel_create, bs_channel_destroy,
 				sizeof(struct spdk_bs_channel), "blobstore");
 	rc = bs_register_md_thread(bs);
 	if (rc == -1) {
+err:
 		spdk_io_device_unregister(bs, NULL);
 		pthread_mutex_destroy(&bs->used_clusters_mutex);
 		spdk_bit_array_free(&bs->open_blobids);
@@ -3546,6 +3581,10 @@ bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev
 		return -ENOMEM;
 	}
 
+	if (back_dev)
+		rc = bs_register_back_thread(bs);
+	if (rc == -1)
+		goto err;
 	*_ctx = ctx;
 	*_bs = bs;
 	return 0;
@@ -5127,6 +5166,8 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 		return;
 	}
 
+	//bs->back_dev = back_dev;
+
 	if (opts.num_md_pages == SPDK_BLOB_OPTS_NUM_MD_PAGES) {
 		/* By default, allocate 1 page per cluster.
 		 * Technically, this over-allocates metadata
@@ -5645,9 +5686,30 @@ bs_register_md_thread(struct spdk_blob_store *bs)
 }
 
 static int
+bs_register_back_thread(struct spdk_blob_store *bs)
+{
+	// TODO: CASE 123 : if bs->md_dev is NULL use bs->dev
+	bs->back_channel = spdk_get_io_channel(&bs->back_dev);
+	if (!bs->back_channel) {
+		SPDK_ERRLOG("Failed to get IO channel.\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int
 bs_unregister_md_thread(struct spdk_blob_store *bs)
 {
 	spdk_put_io_channel(bs->md_channel);
+
+	return 0;
+}
+
+static int
+bs_unregister_back_thread(struct spdk_blob_store *bs)
+{
+	spdk_put_io_channel(bs->back_channel);
 
 	return 0;
 }
@@ -6112,6 +6174,8 @@ bs_snapshot_freeze_cpl(void *cb_arg, int rc)
 	/* set new back_bs_dev for snapshot */
 	// TODO: Do we need to clone the back_bs_dev again with it's channels?
 	newblob->back_bs_dev = origblob->back_bs_dev;
+	// Is this enough?
+	newblob->back_bs_channel = origblob->back_bs_channel;
 	/* Set invalid flags from origblob */
 	newblob->invalid_flags = origblob->invalid_flags;
 
@@ -6402,8 +6466,10 @@ bs_inflate_blob_set_parent_cpl(void *cb_arg, struct spdk_blob *_parent, int bser
 
 	bs_blob_list_remove(_blob);
 	_blob->parent_id = _parent->id;
-
-	_blob->back_bs_dev->destroy(_blob->back_bs_dev);
+	if (_blob->back_bs_channel && 0) {
+		_blob->back_bs_dev->destroy_channel(_blob->back_bs_dev, _blob->back_bs_channel);
+	}
+	//_blob->back_bs_dev->destroy(_blob->back_bs_dev);
 	_blob->back_bs_dev = bs_create_blob_bs_dev(_parent);
 	bs_blob_list_add(_blob);
 
@@ -6421,7 +6487,9 @@ bs_inflate_blob_done(struct spdk_clone_snapshot_ctx *ctx)
 		bs_blob_list_remove(_blob);
 		blob_remove_xattr(_blob, BLOB_SNAPSHOT, true);
 		_blob->invalid_flags = _blob->invalid_flags & ~SPDK_BLOB_THIN_PROV;
-		_blob->back_bs_dev->destroy(_blob->back_bs_dev);
+		if (_blob->back_bs_channel && 0)
+			_blob->back_bs_dev->destroy_channel(_blob->back_bs_dev, _blob->back_bs_channel);
+		//_blob->back_bs_dev->destroy(_blob->back_bs_dev);
 		_blob->back_bs_dev = NULL;
 		_blob->parent_id = SPDK_BLOBID_INVALID;
 	} else {
@@ -6436,6 +6504,8 @@ bs_inflate_blob_done(struct spdk_clone_snapshot_ctx *ctx)
 		bs_blob_list_remove(_blob);
 		blob_remove_xattr(_blob, BLOB_SNAPSHOT, true);
 		_blob->parent_id = SPDK_BLOBID_INVALID;
+		if (_blob->back_bs_channel && 0)
+			_blob->back_bs_dev->destroy_channel(_blob->back_bs_dev, _blob->back_bs_channel);
 		_blob->back_bs_dev->destroy(_blob->back_bs_dev);
 		_blob->back_bs_dev = bs_create_zeroes_dev();
 	}
@@ -6912,6 +6982,8 @@ static void
 delete_snapshot_update_extent_pages_cpl(struct delete_snapshot_ctx *ctx)
 {
 	/* Delete old backing bs_dev from clone (related to snapshot that will be removed) */
+	if (ctx->clone->back_bs_channel && 0)
+		ctx->clone->back_bs_dev->destroy_channel(ctx->clone->back_bs_dev, ctx->clone->back_bs_channel);
 	ctx->clone->back_bs_dev->destroy(ctx->clone->back_bs_dev);
 
 	/* Set/remove snapshot xattr and switch parent ID and backing bs_dev on clone... */
@@ -6919,6 +6991,8 @@ delete_snapshot_update_extent_pages_cpl(struct delete_snapshot_ctx *ctx)
 		/* ...to parent snapshot */
 		ctx->clone->parent_id = ctx->parent_snapshot_entry->id;
 		ctx->clone->back_bs_dev = ctx->snapshot->back_bs_dev;
+		if (ctx->snapshot->back_bs_channel)
+			ctx->clone->back_bs_channel = ctx->snapshot->back_bs_channel;
 		blob_set_xattr(ctx->clone, BLOB_SNAPSHOT, &ctx->parent_snapshot_entry->id,
 			       sizeof(spdk_blob_id),
 			       true);
@@ -6926,6 +7000,7 @@ delete_snapshot_update_extent_pages_cpl(struct delete_snapshot_ctx *ctx)
 		/* ...to blobid invalid and zeroes dev */
 		ctx->clone->parent_id = SPDK_BLOBID_INVALID;
 		ctx->clone->back_bs_dev = bs_create_zeroes_dev();
+		ctx->clone->back_bs_channel = NULL;
 		blob_remove_xattr(ctx->clone, BLOB_SNAPSHOT, true);
 	}
 

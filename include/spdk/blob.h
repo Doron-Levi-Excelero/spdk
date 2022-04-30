@@ -194,7 +194,7 @@ struct spdk_bs_dev {
 
 	struct spdk_bdev *(*get_base_bdev)(struct spdk_bs_dev *dev);
 
-	struct spdk_bs_dev *(*clone)(struct spdk_bs_dev *dev);
+	struct spdk_bs_dev *(*clone)(struct spdk_bs_dev *dev, struct spdk_io_channel **channel);
 
 	uint64_t	blockcnt;
 	uint32_t	blocklen; /* In bytes */

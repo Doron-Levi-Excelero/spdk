@@ -151,6 +151,7 @@ struct spdk_blob {
 	uint64_t	md_ro_flags;
 
 	struct spdk_bs_dev *back_bs_dev;
+	struct spdk_io_channel *back_bs_channel;
 
 	/* TODO: The xattrs are mutable, but we don't want to be
 	 * copying them unnecessarily. Figure this out.
@@ -181,6 +182,7 @@ struct spdk_blob_store {
 	uint32_t			md_len; /* Count, in pages */
 
 	struct spdk_io_channel		*md_channel;
+	struct spdk_io_channel		*back_channel;
 	uint32_t			max_channel_ops;
 
 	struct spdk_thread		*md_thread;

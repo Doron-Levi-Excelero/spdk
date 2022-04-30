@@ -296,13 +296,14 @@ static struct spdk_io_channel *
 bdev_blob_create_channel(struct spdk_bs_dev *dev)
 {
 	struct blob_bdev *blob_bdev = (struct blob_bdev *)dev;
-
+	SPDK_NOTICELOG("Creating channel for bs_dev %p\n", dev);
 	return spdk_bdev_get_io_channel(blob_bdev->desc);
 }
 
 static void
 bdev_blob_destroy_channel(struct spdk_bs_dev *dev, struct spdk_io_channel *channel)
 {
+	SPDK_NOTICELOG("Destroying channel %p for bs_dev %p\n", channel, dev);
 	spdk_put_io_channel(channel);
 }
 
@@ -312,6 +313,7 @@ bdev_blob_destroy(struct spdk_bs_dev *bs_dev)
 	struct spdk_bdev_desc *desc = __get_desc(bs_dev);
 	struct blob_bdev *blob_bdev = (struct blob_bdev *)bs_dev;
 
+	SPDK_NOTICELOG("Destory blob bdev %p\n", bs_dev);
 	if (blob_bdev->claimed) {
 		spdk_bdev_module_release_bdev(blob_bdev->bdev);
 	}
@@ -334,11 +336,12 @@ bdev_blob_clone_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *
 }
 
 static struct spdk_bs_dev *
-bdev_blob_clone(struct spdk_bs_dev *bs_dev)
+bdev_blob_clone(struct spdk_bs_dev *bs_dev, struct spdk_io_channel **channel)
 {
 	struct spdk_bdev *bdev = __get_bdev(bs_dev);
 	struct spdk_bs_dev *clone_bs_dev;
 	spdk_bdev_create_bs_dev(bdev, bdev_blob_clone_bdev_event_cb, NULL, &clone_bs_dev);
+	*channel = spdk_bdev_get_io_channel(((struct blob_bdev *)clone_bs_dev)->desc);
 	return clone_bs_dev;
 }
 
