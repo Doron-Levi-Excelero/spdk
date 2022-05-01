@@ -114,7 +114,7 @@ rpc_lvol_store_construct_cb(void *cb_arg, struct spdk_lvol_store *lvol_store, in
 	return;
 
 invalid:
-	spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+	spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 					 spdk_strerror(-lvserrno));
 }
 
