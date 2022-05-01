@@ -995,6 +995,8 @@ _create_lvol_disk(struct spdk_lvol *lvol, bool destroy)
 	unsigned char *alias;
 	int rc;
 
+	SPDK_NOTICELOG("Entry\n");
+
 	lvs_bdev = vbdev_get_lvs_bdev_by_lvs(lvol->lvol_store);
 	if (lvs_bdev == NULL) {
 		SPDK_ERRLOG("No spdk lvs-bdev pair found for lvol %s\n", lvol->unique_id);
@@ -1058,6 +1060,8 @@ _vbdev_lvol_create_cb(void *cb_arg, struct spdk_lvol *lvol, int lvolerrno)
 {
 	struct spdk_lvol_with_handle_req *req = cb_arg;
 
+	SPDK_NOTICELOG("Entry\n");
+
 	if (lvolerrno < 0) {
 		goto end;
 	}
@@ -1116,6 +1120,8 @@ vbdev_lvol_create_clone(struct spdk_lvol *lvol, const char *clone_name,
 			spdk_lvol_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_lvol_with_handle_req *req;
+
+	SPDK_NOTICELOG("Entry\n");
 
 	req = calloc(1, sizeof(*req));
 	if (req == NULL) {

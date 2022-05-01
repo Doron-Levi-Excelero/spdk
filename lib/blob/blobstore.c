@@ -3206,6 +3206,7 @@ bs_blob_list_add(struct spdk_blob *blob)
 	struct spdk_blob_list *clone_entry = NULL;
 
 	assert(blob != NULL);
+	SPDK_NOTICELOG("Entry\n");
 
 	snapshot_id = blob->parent_id;
 	if (snapshot_id == SPDK_BLOBID_INVALID) {
@@ -3736,6 +3737,8 @@ bs_update_corrupted_blob(void *cb_arg, int bserrno)
 {
 	struct spdk_bs_load_ctx *ctx = cb_arg;
 
+	SPDK_NOTICELOG("Entry\n");
+
 	if (bserrno != 0) {
 		SPDK_ERRLOG("Failed to close clone of a corrupted blob\n");
 		spdk_bs_iter_next(ctx->bs, ctx->blob, bs_load_iter, ctx);
@@ -3784,6 +3787,8 @@ bs_load_iter(void *arg, struct spdk_blob *blob, int bserrno)
 	const void *value;
 	size_t len;
 	int rc = 0;
+
+	SPDK_NOTICELOG("Entry\n");
 
 	if (bserrno == 0) {
 		/* Examine blob if it is corrupted after power failure. Fix
@@ -5995,6 +6000,8 @@ bs_snapshot_origblob_sync_cpl(void *cb_arg, int bserrno)
 	struct spdk_blob *origblob = ctx->original.blob;
 	struct spdk_blob *newblob = ctx->new.blob;
 
+	SPDK_NOTICELOG("Entry\n");
+
 	if (bserrno != 0) {
 		bs_snapshot_swap_cluster_maps(newblob, origblob);
 		bs_clone_snapshot_origblob_cleanup(ctx, bserrno);
@@ -6022,6 +6029,8 @@ bs_snapshot_newblob_sync_cpl(void *cb_arg, int bserrno)
 	struct spdk_clone_snapshot_ctx *ctx = (struct spdk_clone_snapshot_ctx *)cb_arg;
 	struct spdk_blob *origblob = ctx->original.blob;
 	struct spdk_blob *newblob = ctx->new.blob;
+
+	SPDK_NOTICELOG("Entry\n");
 
 	if (bserrno != 0) {
 		/* return cluster map back to original */
@@ -6261,6 +6270,8 @@ bs_clone_newblob_open_cpl(void *cb_arg, struct spdk_blob *_blob, int bserrno)
 	struct spdk_clone_snapshot_ctx *ctx = (struct spdk_clone_snapshot_ctx *)cb_arg;
 	struct spdk_blob *clone = _blob;
 
+	SPDK_NOTICELOG("Entry\n");
+
 	if (NULL == _blob) {
 		SPDK_NOTICELOG("Returned _blob NULL. bserrno(%d)\n", bserrno);
 		ctx->bserrno = bserrno;
@@ -6289,6 +6300,8 @@ bs_clone_origblob_open_cpl(void *cb_arg, struct spdk_blob *_blob, int bserrno)
 	struct spdk_blob_opts		opts;
 	struct spdk_blob_xattr_opts internal_xattrs;
 	char *xattr_names[] = { BLOB_SNAPSHOT };
+
+	SPDK_NOTICELOG("Entry\n");
 
 	if (bserrno != 0) {
 		bs_clone_snapshot_cleanup_finish(ctx, bserrno);
@@ -6340,6 +6353,8 @@ void spdk_bs_create_clone(struct spdk_blob_store *bs, spdk_blob_id blobid,
 {
 	struct spdk_clone_snapshot_ctx	*ctx = calloc(1, sizeof(*ctx));
 
+	SPDK_NOTICELOG("Entry\n");
+
 	if (!ctx) {
 		cb_fn(cb_arg, SPDK_BLOBID_INVALID, -ENOMEM);
 		return;
@@ -6365,6 +6380,8 @@ bs_inflate_blob_set_parent_cpl(void *cb_arg, struct spdk_blob *_parent, int bser
 {
 	struct spdk_clone_snapshot_ctx *ctx = (struct spdk_clone_snapshot_ctx *)cb_arg;
 	struct spdk_blob *_blob = ctx->original.blob;
+
+	SPDK_NOTICELOG("Entry\n");
 
 	if (bserrno != 0) {
 		bs_clone_snapshot_origblob_cleanup(ctx, bserrno);
