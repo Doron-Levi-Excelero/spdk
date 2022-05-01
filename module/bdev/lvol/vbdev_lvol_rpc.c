@@ -183,8 +183,6 @@ free_rpc_bdev_lvol_load_lvstore(struct rpc_bdev_lvol_load_lvstore *req)
 {
 	free(req->bdev_name);
 	free(req->md_bdev_name);
-	//free(req->lvs_name);
-	//AK: Daniel - free the name for the RO dev
 }
 
 static const struct spdk_json_object_decoder rpc_bdev_lvol_load_lvstore_decoders[] = {
@@ -194,10 +192,8 @@ static const struct spdk_json_object_decoder rpc_bdev_lvol_load_lvstore_decoders
 	//AK: Daniel - add decoder for the RO device
 };
 
-//AK: TODO - remove if not needed
-/*
 static void
-rpc_lvol_store_construct_cb(void *cb_arg, struct spdk_lvol_store *lvol_store, int lvserrno)
+rpc_lvol_store_load_cb(void *cb_arg, struct spdk_lvol_store *lvol_store, int lvserrno)
 {
 	struct spdk_json_write_ctx *w;
 	char lvol_store_uuid[SPDK_UUID_STRING_LEN];
@@ -206,7 +202,8 @@ rpc_lvol_store_construct_cb(void *cb_arg, struct spdk_lvol_store *lvol_store, in
 	if (lvserrno != 0) {
 		goto invalid;
 	}
-
+	assert(lvol_store);
+	
 	spdk_uuid_fmt_lower(lvol_store_uuid, sizeof(lvol_store_uuid), &lvol_store->uuid);
 
 	w = spdk_jsonrpc_begin_result(request);
@@ -218,7 +215,7 @@ invalid:
 	spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 					 spdk_strerror(-lvserrno));
 }
-*/
+
 
 static void
 rpc_bdev_lvol_load_lvstore(struct spdk_jsonrpc_request *request,
@@ -237,9 +234,9 @@ rpc_bdev_lvol_load_lvstore(struct spdk_jsonrpc_request *request,
 
 	//AK: Daniel - Add name argument for the RO dev
 	if (req.md_bdev_name != NULL) {
-		vbdev_lvs_load_with_md(req.bdev_name, req.md_bdev_name);
+		vbdev_lvs_load_with_md(req.bdev_name, req.md_bdev_name, rpc_lvol_store_load_cb, request);
 	} else {
-		vbdev_lvs_load(req.bdev_name);
+		vbdev_lvs_load(req.bdev_name, rpc_lvol_store_load_cb, request);
 	}
 
 cleanup:

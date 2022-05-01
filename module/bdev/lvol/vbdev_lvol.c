@@ -1451,14 +1451,18 @@ vbdev_lvs_examine(struct spdk_bdev *bdev)
 	spdk_lvs_load(bs_dev, _vbdev_lvs_examine_cb, req);
 }
 
-// Nothing to do if we fail
 static void _vbdev_lvs_load_failed(void *cb_arg, int lvserrno)
-{}
+{
+	struct spdk_lvs_with_handle_req *req = (struct spdk_lvs_with_handle_req *)cb_arg;
+	req->cb_fn(req->cb_arg, NULL, lvserrno);
+	free(req);
+}
 
 static void
 _vbdev_lvs_load_finish(void *cb_arg, struct spdk_lvol *lvol, int lvolerrno)
 {
-	struct spdk_lvol_store *lvs = cb_arg;
+	struct spdk_lvs_with_handle_req *req = (struct spdk_lvs_with_handle_req *)cb_arg;
+	struct spdk_lvol_store *lvs = req->lvol_store;
 
 	if (lvolerrno != 0) {
 		SPDK_ERRLOG("Error opening lvol %s\n", lvol->unique_id);
@@ -1479,9 +1483,10 @@ _vbdev_lvs_load_finish(void *cb_arg, struct spdk_lvol *lvol, int lvolerrno)
 	SPDK_INFOLOG(vbdev_lvol, "Opening lvol %s succeeded\n", lvol->unique_id);
 
 end:
-
 	if (lvs->lvols_opened >= lvs->lvol_count) {
 		SPDK_INFOLOG(vbdev_lvol, "Opening lvols finished\n");
+		req->cb_fn(req->cb_arg, lvs, 0);
+		free(req);
 	}
 }
 
@@ -1497,26 +1502,35 @@ _vbdev_lvs_load_cb(void *arg, struct spdk_lvol_store *lvol_store, int lvserrno)
 			     "Name for lvolstore on device %s conflicts with name for already loaded lvs\n",
 			     req->base_bdev->name);
 		/* On error blobstore destroys bs_dev itself */
-		goto end;
+		req->cb_fn(req->cb_arg, NULL, -EEXIST);
+		goto error;
+
 	} else if (lvserrno != 0) {
 		SPDK_INFOLOG(vbdev_lvol, "Lvol store not found on %s\n", req->base_bdev->name);
 		/* On error blobstore destroys bs_dev itself */
-		goto end;
+		req->cb_fn(req->cb_arg, NULL, lvserrno);
+		goto error;
 	}
 
 	// Check if we need to claim the bs_devs or
 	lvserrno = spdk_bs_bdev_claim(lvol_store->bs_dev, &g_lvol_if);
 	if (lvserrno != 0) {
 		SPDK_INFOLOG(vbdev_lvol, "Lvol store base bdev already claimed by another bdev\n");
-		spdk_lvs_unload(lvol_store, _vbdev_lvs_load_failed, NULL);
-		goto end;
+		//AK: TODO - not sure it required to unload here. Just fail the request
+		//req->cb_fn(req->cb_arg, NULL, lvserrno);
+		req->lvserrno = lvserrno;
+		spdk_lvs_unload(lvol_store, _vbdev_lvs_load_failed, req);
+		return;
 	}
 
 	lvs_bdev = calloc(1, sizeof(*lvs_bdev));
 	if (!lvs_bdev) {
 		SPDK_ERRLOG("Cannot alloc memory for lvs_bdev\n");
-		spdk_lvs_unload(lvol_store, _vbdev_lvs_load_failed, NULL);
-		goto end;
+		//AK: TODO - not sure it required to unload here. Just fail the request
+		//req->cb_fn(req->cb_arg, NULL, -ENOMEM);
+		req->lvserrno = -ENOMEM;
+		spdk_lvs_unload(lvol_store, _vbdev_lvs_load_failed, req);
+		return;
 	}
 
 	lvs_bdev->lvs = lvol_store;
@@ -1529,21 +1543,26 @@ _vbdev_lvs_load_cb(void *arg, struct spdk_lvol_store *lvol_store, int lvserrno)
 
 	lvol_store->lvols_opened = 0;
 
+	req->lvol_store = lvol_store;
 	if (!TAILQ_EMPTY(&lvol_store->lvols)) {
 		/* Open all lvols */
 		TAILQ_FOREACH_SAFE(lvol, &lvol_store->lvols, link, tmp) {
-			spdk_lvol_open(lvol, _vbdev_lvs_load_finish, lvol_store);
+			spdk_lvol_open(lvol, _vbdev_lvs_load_finish, req);
 		}
+		return;
+	} else{
+		//lvol_store had no lvols, we can report success
+		req->cb_fn(req->cb_arg, lvol_store, 0);
+		SPDK_INFOLOG(vbdev_lvol, "Lvol store load done\n");
 	}
 
-	SPDK_INFOLOG(vbdev_lvol, "Lvol store load done\n");
-
-end:
+error:
 	free(req);
+	return;
 }
 
 static void
-_vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name)
+_vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_bs_dev *bs_dev;
 	struct spdk_bs_dev *bs_md_dev = NULL;
@@ -1560,6 +1579,9 @@ _vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name)
 		SPDK_ERRLOG("Cannot alloc memory for vbdev lvol store request pointer\n");
 		return;
 	}
+
+	lvs_req->cb_fn = cb_fn;
+	lvs_req->cb_arg = cb_arg;
 
 	if (base_md_bdev_name != NULL) {	// Optional usage of MD device
 		rc = spdk_bdev_create_bs_dev_ext(base_md_bdev_name, vbdev_lvs_base_bdev_event_cb,
@@ -1596,15 +1618,15 @@ _vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name)
 }
 
 void
-vbdev_lvs_load(const char *base_bdev_name)
+vbdev_lvs_load(const char *base_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	_vbdev_lvs_load(base_bdev_name, NULL);
+	_vbdev_lvs_load(base_bdev_name, NULL, cb_fn, cb_arg);
 }
 
 void
-vbdev_lvs_load_with_md(const char *base_bdev_name, const char *base_md_bdev_name)
+vbdev_lvs_load_with_md(const char *base_bdev_name, const char *base_md_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	_vbdev_lvs_load(base_bdev_name, base_md_bdev_name);
+	_vbdev_lvs_load(base_bdev_name, base_md_bdev_name, cb_fn, cb_arg);
 }
 
 struct spdk_lvol *

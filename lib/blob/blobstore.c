@@ -5749,6 +5749,7 @@ bs_create_blob(struct spdk_blob_store *bs,
 
 	page_idx = spdk_bit_array_find_first_clear(bs->used_md_pages, 0);
 	if (page_idx == UINT32_MAX) {
+		SPDK_NOTICELOG("no clear md pages found. could not create blob");
 		cb_fn(cb_arg, 0, -ENOMEM);
 		return;
 	}
@@ -6259,6 +6260,12 @@ bs_clone_newblob_open_cpl(void *cb_arg, struct spdk_blob *_blob, int bserrno)
 {
 	struct spdk_clone_snapshot_ctx *ctx = (struct spdk_clone_snapshot_ctx *)cb_arg;
 	struct spdk_blob *clone = _blob;
+
+	if (NULL == _blob) {
+		SPDK_NOTICELOG("Returned _blob NULL. bserrno(%d)\n", bserrno);
+		ctx->bserrno = bserrno;
+		return;
+	}
 
 	ctx->new.blob = clone;
 	bs_blob_list_add(clone);
