@@ -317,17 +317,16 @@ bs_batch_open(struct spdk_io_channel *_channel,
 }
 
 void
-bs_batch_read_bs_dev(spdk_bs_batch_t *batch, struct spdk_bs_dev *bs_dev,
+bs_batch_read_bs_dev(spdk_bs_batch_t *batch, struct spdk_bs_dev *bs_dev, struct spdk_io_channel *channel,
 		     void *payload, uint64_t lba, uint32_t lba_count)
 {
 	struct spdk_bs_request_set	*set = (struct spdk_bs_request_set *)batch;
-	struct spdk_bs_channel		*channel = set->channel;
 
 	SPDK_NOTICELOG("Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.batch.outstanding_ops++;
-	bs_dev->read(bs_dev, spdk_io_channel_from_ctx(channel), payload, lba, lba_count, &set->cb_args);
+	bs_dev->read(bs_dev, channel, payload, lba, lba_count, &set->cb_args);
 }
 
 void

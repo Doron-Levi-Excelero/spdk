@@ -183,7 +183,7 @@ void bs_user_op_sequence_finish(void *cb_arg, int bserrno);
 spdk_bs_batch_t *bs_batch_open(struct spdk_io_channel *channel,
 			       struct spdk_bs_cpl *cpl);
 
-void bs_batch_read_bs_dev(spdk_bs_batch_t *batch, struct spdk_bs_dev *bs_dev,
+void bs_batch_read_bs_dev(spdk_bs_batch_t *batch, struct spdk_bs_dev *bs_dev, struct spdk_io_channel *channel,
 			  void *payload, uint64_t lba, uint32_t lba_count);
 
 void bs_batch_read_dev(spdk_bs_batch_t *batch, void *payload,
