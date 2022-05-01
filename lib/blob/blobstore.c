@@ -2752,7 +2752,8 @@ blob_request_submit_op_single(struct spdk_io_channel *_ch, struct spdk_blob *blo
 			bs_batch_read_dev(batch, payload, lba, lba_count);
 		} else {
 			/* Read from the backing block device */
-			bs_batch_read_bs_dev(batch, blob->back_bs_dev, payload, lba, lba_count);
+			struct spdk_bs_channel *bs_channel = spdk_io_channel_get_ctx(_ch);
+			bs_batch_read_bs_dev(batch, blob->back_bs_dev, bs_channel->back_dev_channel, payload, lba, lba_count);
 		}
 
 		bs_batch_close(batch);
@@ -3115,7 +3116,7 @@ blob_get_snapshot_and_clone_entries(struct spdk_blob *blob,
 }
 
 static int
-bs_channel_create_common(void *io_device, void *ctx_buf, struct spdk_bs_dev *dev)
+bs_channel_create_common(void *io_device, void *ctx_buf, struct spdk_bs_dev *dev, bool create_back_dev_channel)
 {
 	struct spdk_blob_store		*bs = io_device;
 	struct spdk_bs_channel		*channel = ctx_buf;
@@ -3143,6 +3144,11 @@ bs_channel_create_common(void *io_device, void *ctx_buf, struct spdk_bs_dev *dev
 		return -1;
 	}
 
+	if (create_back_dev_channel && bs->back_dev) {
+		channel->back_dev_channel = bs->back_dev->create_channel(bs->back_dev);
+		/* TODO: Check for failure. Problem is, zero bs dev always returns NULL. */
+	}
+
 	TAILQ_INIT(&channel->need_cluster_alloc);
 	TAILQ_INIT(&channel->queued_io);
 
@@ -3154,7 +3160,7 @@ bs_channel_create(void *io_device, void *ctx_buf)
 {
     struct spdk_blob_store *bs = io_device;
 
-    return bs_channel_create_common(bs, ctx_buf, bs->dev);
+    return bs_channel_create_common(bs, ctx_buf, bs->dev, true);
 }
 
 static int
@@ -3162,12 +3168,13 @@ bs_md_channel_create(void *io_device, void *ctx_buf)
 {
     struct spdk_blob_store *bs = SPDK_CONTAINEROF(io_device, struct spdk_blob_store, md_dev);
     // TODO: CASE 123 if bs->md_dev is NULL we call bs_create_common with bs->dev twice?
-    return bs_channel_create_common(bs, ctx_buf, bs->md_dev ? bs->md_dev : bs->dev);
+    return bs_channel_create_common(bs, ctx_buf, bs->md_dev ? bs->md_dev : bs->dev, false);
 }
 
 static void
 bs_channel_destroy(void *io_device, void *ctx_buf)
 {
+	struct spdk_blob_store *bs = io_device;
 	struct spdk_bs_channel *channel = ctx_buf;
 	spdk_bs_user_op_t *op;
 
@@ -3184,6 +3191,9 @@ bs_channel_destroy(void *io_device, void *ctx_buf)
 	}
 
 	free(channel->req_mem);
+	if (bs->back_dev) {
+		bs->back_dev->destroy_channel(bs->back_dev, channel->back_dev_channel);
+	}
 	channel->dev->destroy_channel(channel->dev, channel->dev_channel);
 }
 
