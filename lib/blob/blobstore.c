@@ -1345,6 +1345,7 @@ blob_load_snapshot_cpl(void *cb_arg, struct spdk_blob *snapshot, int bserrno)
 		if (blob->back_bs_dev == NULL) {
 			bserrno = -ENOMEM;
 		}
+		blob->back_bs_dev_is_blob = true;
 	}
 	if (bserrno != 0) {
 		SPDK_ERRLOG("Snapshot fail\n");
@@ -1363,11 +1364,15 @@ blob_set_default_backing_dev(struct spdk_blob *blob)
 		/* Super blob always gets zeroes as its backing dev. */
 		if (blob->id != blob->bs->super_blob) {
 			blob->back_bs_dev = blob->bs->back_dev->clone(blob->bs->back_dev);
-			return (blob->back_bs_dev) ? 0 : -ENOMEM;
+			if (!blob->back_bs_dev)
+				return -ENOMEM;
+			blob->back_bs_dev_is_blob = false;
+			return 0;
 		}
 	}
 
 	blob->back_bs_dev = bs_create_zeroes_dev();
+	blob->back_bs_dev_is_blob = false;
 	return 0;
 }
 
@@ -2753,7 +2758,8 @@ blob_request_submit_op_single(struct spdk_io_channel *_ch, struct spdk_blob *blo
 		} else {
 			/* Read from the backing block device */
 			struct spdk_bs_channel *bs_channel = spdk_io_channel_get_ctx(_ch);
-			bs_batch_read_bs_dev(batch, blob->back_bs_dev, bs_channel->back_dev_channel, payload, lba, lba_count);
+			struct spdk_io_channel *back_channel = blob->back_bs_dev_is_blob ? _ch : bs_channel->back_dev_channel;
+			bs_batch_read_bs_dev(batch, blob->back_bs_dev, back_channel, payload, lba, lba_count);
 		}
 
 		bs_batch_close(batch);
@@ -6102,6 +6108,7 @@ bs_snapshot_newblob_sync_cpl(void *cb_arg, int bserrno)
 		bs_clone_snapshot_newblob_cleanup(ctx, -EINVAL);
 		return;
 	}
+	origblob->back_bs_dev_is_blob = true;
 
 	bs_blob_list_remove(origblob);
 	origblob->parent_id = newblob->id;
@@ -6132,6 +6139,7 @@ bs_snapshot_freeze_cpl(void *cb_arg, int rc)
 	/* set new back_bs_dev for snapshot */
 	// TODO: Do we need to clone the back_bs_dev again with it's channels?
 	newblob->back_bs_dev = origblob->back_bs_dev;
+	newblob->back_bs_dev_is_blob = origblob->back_bs_dev_is_blob;
 	/* Set invalid flags from origblob */
 	newblob->invalid_flags = origblob->invalid_flags;
 
@@ -6439,6 +6447,7 @@ bs_inflate_blob_set_parent_cpl(void *cb_arg, struct spdk_blob *_parent, int bser
 
 	_blob->back_bs_dev->destroy(_blob->back_bs_dev);
 	_blob->back_bs_dev = bs_create_blob_bs_dev(_parent);
+	_blob->back_bs_dev_is_blob = true;
 	bs_blob_list_add(_blob);
 
 	spdk_blob_sync_md(_blob, bs_clone_snapshot_origblob_cleanup, ctx);
@@ -6457,6 +6466,7 @@ bs_inflate_blob_done(struct spdk_clone_snapshot_ctx *ctx)
 		_blob->invalid_flags = _blob->invalid_flags & ~SPDK_BLOB_THIN_PROV;
 		_blob->back_bs_dev->destroy(_blob->back_bs_dev);
 		_blob->back_bs_dev = NULL;
+		_blob->back_bs_dev_is_blob = false;
 		_blob->parent_id = SPDK_BLOBID_INVALID;
 	} else {
 		_parent = ((struct spdk_blob_bs_dev *)(_blob->back_bs_dev))->blob;
@@ -6471,7 +6481,8 @@ bs_inflate_blob_done(struct spdk_clone_snapshot_ctx *ctx)
 		blob_remove_xattr(_blob, BLOB_SNAPSHOT, true);
 		_blob->parent_id = SPDK_BLOBID_INVALID;
 		_blob->back_bs_dev->destroy(_blob->back_bs_dev);
-		_blob->back_bs_dev = bs_create_zeroes_dev();
+		_blob->back_bs_dev = NULL;
+		blob_set_default_backing_dev(_blob);
 	}
 
 	/* Temporarily override md_ro flag for MD modification */
@@ -6937,6 +6948,7 @@ delete_snapshot_sync_clone_cpl(void *cb_arg, int bserrno)
 
 	if (ctx->parent_snapshot_entry != NULL) {
 		ctx->snapshot->back_bs_dev = NULL;
+		ctx->snapshot->back_bs_dev_is_blob = false;
 	}
 
 	spdk_blob_sync_md(ctx->snapshot, delete_snapshot_sync_snapshot_cpl, ctx);
@@ -6953,13 +6965,14 @@ delete_snapshot_update_extent_pages_cpl(struct delete_snapshot_ctx *ctx)
 		/* ...to parent snapshot */
 		ctx->clone->parent_id = ctx->parent_snapshot_entry->id;
 		ctx->clone->back_bs_dev = ctx->snapshot->back_bs_dev;
+		ctx->clone->back_bs_dev_is_blob = ctx->snapshot->back_bs_dev_is_blob;
 		blob_set_xattr(ctx->clone, BLOB_SNAPSHOT, &ctx->parent_snapshot_entry->id,
 			       sizeof(spdk_blob_id),
 			       true);
 	} else {
 		/* ...to blobid invalid and zeroes dev */
 		ctx->clone->parent_id = SPDK_BLOBID_INVALID;
-		ctx->clone->back_bs_dev = bs_create_zeroes_dev();
+		blob_set_default_backing_dev(ctx->clone);
 		blob_remove_xattr(ctx->clone, BLOB_SNAPSHOT, true);
 	}
 
