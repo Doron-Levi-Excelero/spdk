@@ -126,12 +126,11 @@ bs_sequence_start(struct spdk_io_channel *_channel,
 }
 
 void
-bs_sequence_read_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev,
+bs_sequence_read_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev, struct spdk_io_channel *channel,
 			void *payload, uint64_t lba, uint32_t lba_count,
 			spdk_bs_sequence_cpl cb_fn, void *cb_arg)
 {
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
-	struct spdk_bs_channel       *channel = set->channel;
 
 	SPDK_NOTICELOG("Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
@@ -139,7 +138,7 @@ bs_sequence_read_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev,
 	set->u.sequence.cb_fn = cb_fn;
 	set->u.sequence.cb_arg = cb_arg;
 
-	bs_dev->read(bs_dev, spdk_io_channel_from_ctx(channel), payload, lba, lba_count, &set->cb_args);
+	bs_dev->read(bs_dev, channel, payload, lba, lba_count, &set->cb_args);
 }
 
 void
@@ -178,12 +177,11 @@ bs_sequence_write_dev(spdk_bs_sequence_t *seq, void *payload,
 }
 
 void
-bs_sequence_readv_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev,
+bs_sequence_readv_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev, struct spdk_io_channel *channel,
 			 struct iovec *iov, int iovcnt, uint64_t lba, uint32_t lba_count,
 			 spdk_bs_sequence_cpl cb_fn, void *cb_arg)
 {
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
-	struct spdk_bs_channel       *channel = set->channel;
 
 	SPDK_NOTICELOG("Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
@@ -191,7 +189,7 @@ bs_sequence_readv_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev,
 	set->u.sequence.cb_fn = cb_fn;
 	set->u.sequence.cb_arg = cb_arg;
 
-	bs_dev->readv(bs_dev, spdk_io_channel_from_ctx(channel), iov, iovcnt, lba, lba_count,
+	bs_dev->readv(bs_dev, channel, iov, iovcnt, lba, lba_count,
 		      &set->cb_args);
 }
 

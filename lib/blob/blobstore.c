@@ -2524,7 +2524,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 
 	if (blob->parent_id != SPDK_BLOBID_INVALID) {
 		/* Read cluster from backing device */
-		bs_sequence_read_bs_dev(ctx->seq, blob->back_bs_dev, ctx->buf,
+		bs_sequence_read_bs_dev(ctx->seq, blob->back_bs_dev, _ch, ctx->buf,
 					bs_dev_page_to_lba(blob->back_bs_dev, cluster_start_page),
 					bs_dev_byte_to_lba(blob->back_bs_dev, blob->bs->cluster_sz),
 					blob_write_copy, ctx);
@@ -3027,7 +3027,9 @@ blob_request_submit_rw_iov(struct spdk_blob *blob, struct spdk_io_channel *_chan
 			if (is_allocated) {
 				bs_sequence_readv_dev(seq, iov, iovcnt, lba, lba_count, rw_iov_done, NULL);
 			} else {
-				bs_sequence_readv_bs_dev(seq, blob->back_bs_dev, iov, iovcnt, lba, lba_count,
+				struct spdk_bs_channel *bs_channel = spdk_io_channel_get_ctx(_channel);
+				struct spdk_io_channel *back_channel = blob->back_bs_dev_is_blob ? _channel : bs_channel->back_dev_channel;
+				bs_sequence_readv_bs_dev(seq, blob->back_bs_dev, back_channel, iov, iovcnt, lba, lba_count,
 							 rw_iov_done, NULL);
 			}
 		} else {
