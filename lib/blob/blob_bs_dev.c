@@ -121,6 +121,13 @@ blob_bs_dev_destroy(struct spdk_bs_dev *bs_dev)
 	spdk_blob_close(b->blob, blob_bs_dev_destroy_cpl, b);
 }
 
+static struct spdk_bs_dev *
+blob_bs_dev_clone(struct spdk_bs_dev *bs_dev)
+{
+	struct spdk_blob_bs_dev *b = (struct spdk_blob_bs_dev *)bs_dev;
+	return bs_create_blob_bs_dev(b->blob);
+}
+
 
 struct spdk_bs_dev *
 bs_create_blob_bs_dev(struct spdk_blob *blob)
@@ -144,6 +151,7 @@ bs_create_blob_bs_dev(struct spdk_blob *blob)
 	b->bs_dev.readv = blob_bs_dev_readv;
 	b->bs_dev.write_zeroes = blob_bs_dev_write_zeroes;
 	b->bs_dev.unmap = blob_bs_dev_unmap;
+	b->bs_dev.clone = blob_bs_dev_clone;
 	b->blob = blob;
 
 	return &b->bs_dev;
