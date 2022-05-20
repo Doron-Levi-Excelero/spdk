@@ -42,6 +42,12 @@ zeroes_destroy(struct spdk_bs_dev *bs_dev)
 	return;
 }
 
+static struct spdk_bs_dev *
+zeroes_clone(struct spdk_bs_dev *bs_dev)
+{
+	return bs_dev;
+}
+
 static void
 zeroes_read(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, void *payload,
 	    uint64_t lba, uint32_t lba_count, struct spdk_bs_dev_cb_args *cb_args)
@@ -113,6 +119,7 @@ static struct spdk_bs_dev g_zeroes_bs_dev = {
 	.writev = zeroes_writev,
 	.write_zeroes = zeroes_write_zeroes,
 	.unmap = zeroes_unmap,
+	.clone = zeroes_clone,
 };
 
 struct spdk_bs_dev *
