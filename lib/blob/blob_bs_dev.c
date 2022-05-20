@@ -125,7 +125,9 @@ static struct spdk_bs_dev *
 blob_bs_dev_clone(struct spdk_bs_dev *bs_dev)
 {
 	struct spdk_blob_bs_dev *b = (struct spdk_blob_bs_dev *)bs_dev;
-	return bs_create_blob_bs_dev(b->blob);
+	struct spdk_bs_dev *clone = bs_create_blob_bs_dev(b->blob);
+	b->blob->open_ref++;
+	return clone;
 }
 
 
