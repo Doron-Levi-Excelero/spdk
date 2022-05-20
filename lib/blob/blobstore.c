@@ -6103,7 +6103,8 @@ bs_snapshot_newblob_sync_cpl(void *cb_arg, int bserrno)
 	}
 
 	/* Create new back_bs_dev for snapshot */
-	origblob->back_bs_dev->destroy(origblob->back_bs_dev);
+	if (origblob->back_bs_dev)
+		origblob->back_bs_dev->destroy(origblob->back_bs_dev);
 	origblob->back_bs_dev_is_blob = false;
 	origblob->back_bs_dev = bs_create_blob_bs_dev(newblob);
 	if (origblob->back_bs_dev == NULL) {
