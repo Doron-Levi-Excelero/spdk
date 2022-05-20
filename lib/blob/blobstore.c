@@ -6145,7 +6145,10 @@ bs_snapshot_freeze_cpl(void *cb_arg, int rc)
 	/* set new back_bs_dev for snapshot */
 	newblob->back_bs_dev->destroy(newblob->back_bs_dev);
 	newblob->back_bs_dev_is_blob = false;
-	newblob->back_bs_dev = origblob->back_bs_dev->clone(origblob->back_bs_dev);
+	if (origblob->back_bs_dev)
+		newblob->back_bs_dev = origblob->back_bs_dev->clone(origblob->back_bs_dev);
+	else if (spdk_blob_is_thin_provisioned(newblob))
+		assert(newblob->back_bs_dev == g_zeroes_bs_dev);
 	if (newblob->back_bs_dev == NULL) {
 		bs_clone_snapshot_newblob_cleanup(ctx, -ENOMEM);
 		return;
