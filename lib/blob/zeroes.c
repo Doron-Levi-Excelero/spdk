@@ -101,6 +101,12 @@ zeroes_unmap(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 	assert(false);
 }
 
+static struct spdk_bs_dev *
+zeroes_clone(struct spdk_bs_dev *bs_dev)
+{
+	return bs_dev;
+}
+
 static struct spdk_bs_dev g_zeroes_bs_dev = {
 	.blockcnt = UINT64_MAX,
 	.blocklen = 512,
@@ -113,6 +119,7 @@ static struct spdk_bs_dev g_zeroes_bs_dev = {
 	.writev = zeroes_writev,
 	.write_zeroes = zeroes_write_zeroes,
 	.unmap = zeroes_unmap,
+	.clone = zeroes_clone,
 };
 
 struct spdk_bs_dev *
