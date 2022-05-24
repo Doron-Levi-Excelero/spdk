@@ -6103,8 +6103,10 @@ bs_snapshot_newblob_sync_cpl(void *cb_arg, int bserrno)
 	}
 
 	/* Create new back_bs_dev for snapshot */
-	origblob->back_bs_dev->destroy(origblob->back_bs_dev);
-	origblob->back_bs_dev_is_blob = false;
+	if (origblob->back_bs_dev) {
+		origblob->back_bs_dev->destroy(origblob->back_bs_dev);
+		origblob->back_bs_dev_is_blob = false;
+	}
 	origblob->back_bs_dev = bs_create_blob_bs_dev(newblob);
 	if (origblob->back_bs_dev == NULL) {
 		/* return cluster map back to original */
@@ -6144,12 +6146,15 @@ bs_snapshot_freeze_cpl(void *cb_arg, int rc)
 	/* set new back_bs_dev for snapshot */
 	newblob->back_bs_dev->destroy(newblob->back_bs_dev);
 	newblob->back_bs_dev_is_blob = false;
-	newblob->back_bs_dev = origblob->back_bs_dev->clone(origblob->back_bs_dev);
-	if (newblob->back_bs_dev == NULL) {
-		bs_clone_snapshot_newblob_cleanup(ctx, -ENOMEM);
-		return;
+	newblob->back_bs_dev = NULL;
+	if (origblob->back_bs_dev != NULL) {
+		newblob->back_bs_dev = origblob->back_bs_dev->clone(origblob->back_bs_dev);
+		if (newblob->back_bs_dev == NULL) {
+			bs_clone_snapshot_newblob_cleanup(ctx, -ENOMEM);
+			return;
+		}
+		newblob->back_bs_dev_is_blob = origblob->back_bs_dev_is_blob;
 	}
-	newblob->back_bs_dev_is_blob = origblob->back_bs_dev_is_blob;
 	/* Set invalid flags from origblob */
 	newblob->invalid_flags = origblob->invalid_flags;
 
