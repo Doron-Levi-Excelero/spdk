@@ -151,6 +151,7 @@ struct spdk_blob {
 	uint64_t	md_ro_flags;
 
 	struct spdk_bs_dev *back_bs_dev;
+	bool back_bs_dev_is_blob;
 
 	/* TODO: The xattrs are mutable, but we don't want to be
 	 * copying them unnecessarily. Figure this out.
@@ -187,6 +188,7 @@ struct spdk_blob_store {
 
 	struct spdk_bs_dev		*dev;
 	struct spdk_bs_dev		*md_dev;
+	struct spdk_bs_dev		*back_dev;
 
 	struct spdk_bit_array		*used_md_pages;
 	struct spdk_bit_pool		*used_clusters;
@@ -223,6 +225,7 @@ struct spdk_bs_channel {
 
 	struct spdk_bs_dev		*dev;
 	struct spdk_io_channel		*dev_channel;
+	struct spdk_io_channel		*back_dev_channel;
 
 	TAILQ_HEAD(, spdk_bs_request_set) need_cluster_alloc;
 	TAILQ_HEAD(, spdk_bs_request_set) queued_io;

@@ -327,6 +327,22 @@ bdev_blob_get_base_bdev(struct spdk_bs_dev *bs_dev)
 }
 
 static void
+bdev_blob_clone_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev,
+			     void *event_ctx)
+{
+	/* NOOP */
+}
+
+static struct spdk_bs_dev *
+bdev_blob_clone(struct spdk_bs_dev *bs_dev)
+{
+	struct spdk_bdev *bdev = __get_bdev(bs_dev);
+	struct spdk_bs_dev *clone_bs_dev;
+	spdk_bdev_create_bs_dev(bdev, bdev_blob_clone_bdev_event_cb, NULL, &clone_bs_dev);
+	return clone_bs_dev;
+}
+
+static void
 blob_bdev_init(struct blob_bdev *b, struct spdk_bdev_desc *desc)
 {
 	struct spdk_bdev *bdev;
@@ -348,6 +364,7 @@ blob_bdev_init(struct blob_bdev *b, struct spdk_bdev_desc *desc)
 	b->bs_dev.write_zeroes = bdev_blob_write_zeroes;
 	b->bs_dev.unmap = bdev_blob_unmap;
 	b->bs_dev.get_base_bdev = bdev_blob_get_base_bdev;
+	b->bs_dev.clone = bdev_blob_clone;
 }
 
 int
@@ -366,6 +383,34 @@ spdk_bdev_create_bs_dev_ext(const char *bdev_name, spdk_bdev_event_cb_t event_cb
 	}
 
 	rc = spdk_bdev_open_ext(bdev_name, true, event_cb, event_ctx, &desc);
+	if (rc != 0) {
+		free(b);
+		return rc;
+	}
+
+	blob_bdev_init(b, desc);
+
+	*_bs_dev = &b->bs_dev;
+
+	return 0;
+}
+
+int
+spdk_bdev_create_bs_dev(struct spdk_bdev *bdev, spdk_bdev_event_cb_t event_cb,
+			    void *event_ctx, struct spdk_bs_dev **_bs_dev)
+{
+	struct blob_bdev *b;
+	struct spdk_bdev_desc *desc;
+	int rc;
+
+	b = calloc(1, sizeof(*b));
+
+	if (b == NULL) {
+		SPDK_ERRLOG("could not allocate blob_bdev\n");
+		return -ENOMEM;
+	}
+
+	rc = spdk_bdev_open(bdev, true, event_cb, event_ctx, &desc);
 	if (rc != 0) {
 		free(b);
 		return rc;

@@ -221,11 +221,12 @@ end:
 }
 
 static int
-_vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, const char *name, uint32_t cluster_sz,
+_vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, const char *base_back_bdev_name, const char *name, uint32_t cluster_sz,
 		 enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_bs_dev *bs_dev;
 	struct spdk_bs_dev *bs_md_dev = NULL;
+	struct spdk_bs_dev *bs_back_dev = NULL;
 	struct spdk_lvs_with_handle_req *lvs_req;
 	struct spdk_lvs_opts opts;
 	int rc;
@@ -273,9 +274,25 @@ _vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, con
 			return rc;
 		}
 		lvs_req->bs_md_dev = bs_md_dev;
-	} /*else {
+	} else {
 		lvs_req->bs_md_dev = NULL;
-	}*/
+	}
+
+	if (base_back_bdev_name != NULL) {
+		rc = spdk_bdev_create_bs_dev_ext(base_back_bdev_name, vbdev_lvs_base_bdev_event_cb,
+						 NULL, &bs_back_dev);
+		if (rc < 0) {
+			SPDK_ERRLOG("Cannot create backing dev blobstore device\n");
+			if (bs_md_dev != NULL) { // Cleanup MD dev if created
+				bs_md_dev->destroy(bs_md_dev);
+			}
+			free(lvs_req);
+			return rc;
+		}
+		lvs_req->bs_back_dev = bs_back_dev;
+	} else {
+		lvs_req->bs_back_dev = NULL;
+	}
 
 	rc = spdk_bdev_create_bs_dev_ext(base_bdev_name, vbdev_lvs_base_bdev_event_cb,
 					 NULL, &bs_dev);
@@ -283,6 +300,9 @@ _vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, con
 		SPDK_ERRLOG("Cannot create blobstore device\n");
 		if (bs_md_dev != NULL) { // Cleanup MD dev if created
 			bs_md_dev->destroy(bs_md_dev);
+		}
+		if (bs_back_dev != NULL) {
+			bs_back_dev->destroy(bs_back_dev);
 		}
 		free(lvs_req);
 		return rc;
@@ -297,10 +317,16 @@ _vbdev_lvs_create(const char *base_bdev_name, const char *base_md_bdev_name, con
 	if (lvs_req->bs_md_dev == NULL) { // No md device given
 		rc = spdk_lvs_init(bs_dev, &opts, _vbdev_lvs_create_cb, lvs_req);
 	} else {
-		rc = spdk_lvs_init_with_md(bs_dev, bs_md_dev, &opts, _vbdev_lvs_create_cb, lvs_req);
+		rc = spdk_lvs_init_with_md(bs_dev, bs_md_dev, bs_back_dev, &opts, _vbdev_lvs_create_cb, lvs_req);
 	}
 	if (rc < 0) {
 		free(lvs_req);
+		if (bs_md_dev != NULL) {
+			bs_md_dev->destroy(bs_md_dev);
+		}
+		if (bs_back_dev != NULL) {
+			bs_back_dev->destroy(bs_back_dev);
+		}
 		bs_dev->destroy(bs_dev);
 		return rc;
 	}
@@ -312,14 +338,14 @@ int
 vbdev_lvs_create(const char *base_bdev_name, const char *name, uint32_t cluster_sz,
 		 enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	return _vbdev_lvs_create(base_bdev_name, NULL, name, cluster_sz, clear_method, cb_fn, cb_arg);
+	return _vbdev_lvs_create(base_bdev_name, NULL, NULL, name, cluster_sz, clear_method, cb_fn, cb_arg);
 }
 
 int
-vbdev_lvs_create_with_md(const char *base_bdev_name, const char *base_md_bdev_name, const char *name, uint32_t cluster_sz,
+vbdev_lvs_create_with_md(const char *base_bdev_name, const char *base_md_bdev_name, const char *base_back_bdev_name, const char *name, uint32_t cluster_sz,
              enum lvs_clear_method clear_method, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	return _vbdev_lvs_create(base_bdev_name, base_md_bdev_name, name, cluster_sz, clear_method, cb_fn, cb_arg);
+	return _vbdev_lvs_create(base_bdev_name, base_md_bdev_name, base_back_bdev_name, name, cluster_sz, clear_method, cb_fn, cb_arg);
 }
 
 static void
@@ -1568,10 +1594,11 @@ error:
 }
 
 static void
-_vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+_vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name, const char *base_back_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_bs_dev *bs_dev;
 	struct spdk_bs_dev *bs_md_dev = NULL;
+	struct spdk_bs_dev *bs_back_dev = NULL;
 	struct spdk_lvs_with_handle_req *lvs_req;
 	int rc;
 
@@ -1602,12 +1629,32 @@ _vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name, spdk_
 		lvs_req->bs_md_dev = NULL;
 	}
 
+	if (base_back_bdev_name != NULL) {	// Optional usage of backing device
+		rc = spdk_bdev_create_bs_dev_ext(base_back_bdev_name, vbdev_lvs_base_bdev_event_cb,
+						 NULL, &bs_back_dev);
+		if (rc < 0) {
+			SPDK_ERRLOG("Cannot create back blobstore device\n");
+			if (bs_md_dev != NULL) { // Cleanup MD dev if created
+				bs_md_dev->destroy(bs_md_dev);
+			}
+			free(lvs_req);
+			return;
+		}
+		lvs_req->bs_back_dev = bs_back_dev;
+	} else {
+		lvs_req->bs_back_dev = NULL;
+	}
+
+
 	rc = spdk_bdev_create_bs_dev_ext(base_bdev_name, vbdev_lvs_base_bdev_event_cb,
 					 NULL, &bs_dev);
 	if (rc < 0) {
 		SPDK_ERRLOG("Cannot create blobstore device\n");
 		if (bs_md_dev != NULL) { // Cleanup MD dev if created
 			bs_md_dev->destroy(bs_md_dev);
+		}
+		if (bs_back_dev != NULL) { // Cleanup back dev if created
+			bs_back_dev->destroy(bs_back_dev);
 		}
 		free(lvs_req);
 		return;
@@ -1619,20 +1666,20 @@ _vbdev_lvs_load(const char *base_bdev_name, const char *base_md_bdev_name, spdk_
 	if (lvs_req->bs_md_dev == NULL) { // No md device given
 		spdk_lvs_load(bs_dev, _vbdev_lvs_load_cb, lvs_req);
 	} else {
-		spdk_lvs_load_with_md(bs_dev, bs_md_dev, _vbdev_lvs_load_cb, lvs_req);
+		spdk_lvs_load_with_md(bs_dev, bs_md_dev, bs_back_dev, _vbdev_lvs_load_cb, lvs_req);
 	}
 }
 
 void
 vbdev_lvs_load(const char *base_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	_vbdev_lvs_load(base_bdev_name, NULL, cb_fn, cb_arg);
+	_vbdev_lvs_load(base_bdev_name, NULL, NULL, cb_fn, cb_arg);
 }
 
 void
-vbdev_lvs_load_with_md(const char *base_bdev_name, const char *base_md_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
+vbdev_lvs_load_with_md(const char *base_bdev_name, const char *base_md_bdev_name, const char *base_back_bdev_name, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
-	_vbdev_lvs_load(base_bdev_name, base_md_bdev_name, cb_fn, cb_arg);
+	_vbdev_lvs_load(base_bdev_name, base_md_bdev_name, base_back_bdev_name, cb_fn, cb_arg);
 }
 
 struct spdk_lvol *

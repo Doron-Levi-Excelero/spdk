@@ -62,6 +62,9 @@ struct spdk_bdev_module;
 int spdk_bdev_create_bs_dev_ext(const char *bdev_name, spdk_bdev_event_cb_t event_cb,
 				void *event_ctx, struct spdk_bs_dev **bs_dev);
 
+int spdk_bdev_create_bs_dev(struct spdk_bdev *bdev, spdk_bdev_event_cb_t event_cb,
+				void *event_ctx, struct spdk_bs_dev **bs_dev);
+
 /**
  * Claim the bdev module for the given blobstore.
  *

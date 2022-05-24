@@ -2,7 +2,7 @@ from .helpers import deprecated_alias
 
 
 @deprecated_alias('construct_lvol_store')
-def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, md_bdev_name=None, cluster_sz=None, clear_method=None):
+def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, md_bdev_name=None, back_bdev_name=None, cluster_sz=None, clear_method=None):
     """Construct a logical volume store.
 
     Args:
@@ -22,9 +22,11 @@ def bdev_lvol_create_lvstore(client, bdev_name, lvs_name, md_bdev_name=None, clu
         params['clear_method'] = clear_method
     if md_bdev_name:
         params['md_bdev_name'] = md_bdev_name
+    if back_bdev_name:
+        params['back_bdev_name'] = back_bdev_name
     return client.call('bdev_lvol_create_lvstore', params)
 
-def bdev_lvol_load_lvstore(client, bdev_name, md_bdev_name=None):
+def bdev_lvol_load_lvstore(client, bdev_name, md_bdev_name=None, back_bdev_name=None):
     """Load a logical volume store.
 
     Args:
@@ -37,6 +39,8 @@ def bdev_lvol_load_lvstore(client, bdev_name, md_bdev_name=None):
     params = {'bdev_name': bdev_name}
     if md_bdev_name:
         params['md_bdev_name'] = md_bdev_name
+    if back_bdev_name:
+        params['back_bdev_name'] = back_bdev_name
     return client.call('bdev_lvol_load_lvstore', params)
 
 @deprecated_alias('rename_lvol_store')

@@ -1,7 +1,8 @@
 #!/bin/bash
 sudo ./scripts/rpc.py bdev_malloc_create -b data_bdev 64 4096
 sudo ./scripts/rpc.py bdev_malloc_create -b metadata_bdev 64 4096
-sudo ./scripts/rpc.py bdev_lvol_create_lvstore -md metadata_bdev data_bdev lvs0
+sudo ./scripts/rpc.py bdev_malloc_create -b back_bdev 64 4096
+sudo ./scripts/rpc.py bdev_lvol_create_lvstore -bd back_bdev -md metadata_bdev data_bdev lvs0
 sudo ./scripts/rpc.py bdev_lvol_create -l lvs0  lvol0 4
 #sudo ./scripts/rpc.py bdev_get_bdevs > before_load.txt
 
@@ -19,7 +20,7 @@ sudo ./scripts/rpc.py bdev_get_bdevs -b lvs0/clone1 > clone1_a.txt
 echo "Unloading"
 sudo ./scripts/rpc.py bdev_lvol_unload_lvstore lvs0
 echo "Reloading"
-sudo ./scripts/rpc.py bdev_lvol_load_lvstore data_bdev -md metadata_bdev
+sudo ./scripts/rpc.py bdev_lvol_load_lvstore data_bdev -md metadata_bdev -bd back_bdev
 
 #sudo ./scripts/rpc.py bdev_get_bdevs > after_load.txt
 sudo ./scripts/rpc.py bdev_get_bdevs -b lvs0/lvol0  > lvol0__b.txt

@@ -126,20 +126,19 @@ bs_sequence_start(struct spdk_io_channel *_channel,
 }
 
 void
-bs_sequence_read_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev,
+bs_sequence_read_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev, struct spdk_io_channel *channel,
 			void *payload, uint64_t lba, uint32_t lba_count,
 			spdk_bs_sequence_cpl cb_fn, void *cb_arg)
 {
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
-	struct spdk_bs_channel       *channel = set->channel;
 
-	SPDK_NOTICELOG("Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
+	SPDK_DEBUGLOG(blob_rw, "Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.sequence.cb_fn = cb_fn;
 	set->u.sequence.cb_arg = cb_arg;
 
-	bs_dev->read(bs_dev, spdk_io_channel_from_ctx(channel), payload, lba, lba_count, &set->cb_args);
+	bs_dev->read(bs_dev, channel, payload, lba, lba_count, &set->cb_args);
 }
 
 void
@@ -150,7 +149,7 @@ bs_sequence_read_dev(spdk_bs_sequence_t *seq, void *payload,
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
 	struct spdk_bs_channel       *channel = set->channel;
 
-	SPDK_NOTICELOG("Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
+	SPDK_DEBUGLOG(blob_rw, "Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.sequence.cb_fn = cb_fn;
@@ -167,7 +166,7 @@ bs_sequence_write_dev(spdk_bs_sequence_t *seq, void *payload,
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
 	struct spdk_bs_channel       *channel = set->channel;
 
-	SPDK_NOTICELOG("Writing %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
+	SPDK_DEBUGLOG(blob_rw, "Writing %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.sequence.cb_fn = cb_fn;
@@ -178,20 +177,19 @@ bs_sequence_write_dev(spdk_bs_sequence_t *seq, void *payload,
 }
 
 void
-bs_sequence_readv_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev,
+bs_sequence_readv_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev, struct spdk_io_channel *channel,
 			 struct iovec *iov, int iovcnt, uint64_t lba, uint32_t lba_count,
 			 spdk_bs_sequence_cpl cb_fn, void *cb_arg)
 {
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
-	struct spdk_bs_channel       *channel = set->channel;
 
-	SPDK_NOTICELOG("Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
+	SPDK_DEBUGLOG(blob_rw, "Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.sequence.cb_fn = cb_fn;
 	set->u.sequence.cb_arg = cb_arg;
 
-	bs_dev->readv(bs_dev, spdk_io_channel_from_ctx(channel), iov, iovcnt, lba, lba_count,
+	bs_dev->readv(bs_dev, channel, iov, iovcnt, lba, lba_count,
 		      &set->cb_args);
 }
 
@@ -202,7 +200,7 @@ bs_sequence_readv_dev(spdk_bs_sequence_t *seq, struct iovec *iov, int iovcnt,
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
 	struct spdk_bs_channel       *channel = set->channel;
 
-	SPDK_NOTICELOG("Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
+	SPDK_DEBUGLOG(blob_rw, "Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.sequence.cb_fn = cb_fn;
@@ -219,7 +217,7 @@ bs_sequence_writev_dev(spdk_bs_sequence_t *seq, struct iovec *iov, int iovcnt,
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
 	struct spdk_bs_channel       *channel = set->channel;
 
-	SPDK_NOTICELOG("Writing %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
+	SPDK_DEBUGLOG(blob_rw, "Writing %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.sequence.cb_fn = cb_fn;
@@ -237,7 +235,7 @@ bs_sequence_write_zeroes_dev(spdk_bs_sequence_t *seq,
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
 	struct spdk_bs_channel       *channel = set->channel;
 
-	SPDK_NOTICELOG("writing zeroes to %" PRIu64 " blocks at LBA %" PRIu64 "\n",
+	SPDK_DEBUGLOG(blob_rw, "writing zeroes to %" PRIu64 " blocks at LBA %" PRIu64 "\n",
 		      lba_count, lba);
 
 	set->u.sequence.cb_fn = cb_fn;
@@ -317,17 +315,16 @@ bs_batch_open(struct spdk_io_channel *_channel,
 }
 
 void
-bs_batch_read_bs_dev(spdk_bs_batch_t *batch, struct spdk_bs_dev *bs_dev,
+bs_batch_read_bs_dev(spdk_bs_batch_t *batch, struct spdk_bs_dev *bs_dev, struct spdk_io_channel *channel,
 		     void *payload, uint64_t lba, uint32_t lba_count)
 {
 	struct spdk_bs_request_set	*set = (struct spdk_bs_request_set *)batch;
-	struct spdk_bs_channel		*channel = set->channel;
 
-	SPDK_NOTICELOG("Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
+	SPDK_DEBUGLOG(blob_rw, "Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.batch.outstanding_ops++;
-	bs_dev->read(bs_dev, spdk_io_channel_from_ctx(channel), payload, lba, lba_count, &set->cb_args);
+	bs_dev->read(bs_dev, channel, payload, lba, lba_count, &set->cb_args);
 }
 
 void
@@ -337,7 +334,7 @@ bs_batch_read_dev(spdk_bs_batch_t *batch, void *payload,
 	struct spdk_bs_request_set	*set = (struct spdk_bs_request_set *)batch;
 	struct spdk_bs_channel		*channel = set->channel;
 
-	SPDK_NOTICELOG("Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
+	SPDK_DEBUGLOG(blob_rw, "Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.batch.outstanding_ops++;
@@ -351,7 +348,7 @@ bs_batch_write_dev(spdk_bs_batch_t *batch, void *payload,
 	struct spdk_bs_request_set	*set = (struct spdk_bs_request_set *)batch;
 	struct spdk_bs_channel		*channel = set->channel;
 
-	SPDK_NOTICELOG("Writing %" PRIu32 " blocks to LBA %" PRIu64 "\n", lba_count, lba);
+	SPDK_DEBUGLOG(blob_rw, "Writing %" PRIu32 " blocks to LBA %" PRIu64 "\n", lba_count, lba);
 
 	set->u.batch.outstanding_ops++;
 	channel->dev->write(channel->dev, channel->dev_channel, payload, lba, lba_count,
@@ -365,7 +362,7 @@ bs_batch_unmap_dev(spdk_bs_batch_t *batch,
 	struct spdk_bs_request_set	*set = (struct spdk_bs_request_set *)batch;
 	struct spdk_bs_channel		*channel = set->channel;
 
-	SPDK_NOTICELOG("Unmapping %" PRIu64 " blocks at LBA %" PRIu64 "\n", lba_count,
+	SPDK_DEBUGLOG(blob_rw, "Unmapping %" PRIu64 " blocks at LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.batch.outstanding_ops++;
@@ -380,7 +377,7 @@ bs_batch_write_zeroes_dev(spdk_bs_batch_t *batch,
 	struct spdk_bs_request_set	*set = (struct spdk_bs_request_set *)batch;
 	struct spdk_bs_channel		*channel = set->channel;
 
-	SPDK_NOTICELOG("Zeroing %" PRIu64 " blocks at LBA %" PRIu64 "\n", lba_count, lba);
+	SPDK_DEBUGLOG(blob_rw, "Zeroing %" PRIu64 " blocks at LBA %" PRIu64 "\n", lba_count, lba);
 
 	set->u.batch.outstanding_ops++;
 	channel->dev->write_zeroes(channel->dev, channel->dev_channel, lba, lba_count,

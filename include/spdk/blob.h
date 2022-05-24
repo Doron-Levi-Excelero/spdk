@@ -194,6 +194,8 @@ struct spdk_bs_dev {
 
 	struct spdk_bdev *(*get_base_bdev)(struct spdk_bs_dev *dev);
 
+	struct spdk_bs_dev *(*clone)(struct spdk_bs_dev *dev);
+
 	uint64_t	blockcnt;
 	uint32_t	blocklen; /* In bytes */
 };
@@ -260,7 +262,7 @@ void spdk_bs_opts_init(struct spdk_bs_opts *opts, size_t opts_size);
 void spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts,
 		  spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
 
-void spdk_bs_load_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *opts,
+void spdk_bs_load_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev *back_dev, struct spdk_bs_opts *opts,
           spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
 
 /**
@@ -276,7 +278,7 @@ void spdk_bs_load_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_de
 void spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_opts *opts,
 		  spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
 
-void spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_opts *opts,
+void spdk_bs_init_with_md_dev(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev *back_dev, struct spdk_bs_opts *opts,
           spdk_bs_op_with_handle_complete cb_fn, void *cb_arg);
 
 
