@@ -55,6 +55,37 @@ char *g_xattr_names[] = {"first", "second", "third"};
 char *g_xattr_values[] = {"one", "two", "three"};
 uint64_t g_ctx = 1729;
 bool g_use_extent_table = false;
+bool g_test_hybrid_bs = false;
+static struct spdk_bs_dev *
+init_hybrid_bs_dev(void)
+{
+	if (g_test_hybrid_bs) {
+		return init_dev();
+	}
+	return NULL;
+}
+static void init_hybrid_bs_devs(void){
+	g_md_dev   = init_hybrid_bs_dev();
+	g_back_dev = init_hybrid_bs_dev();
+	g_back_dev_read_bytes = 0;
+	//g_back_dev must also have a clone method
+	if (g_back_dev){
+		g_back_dev->clone = clone_dev;
+	}
+}
+static void cleanup_hybrid_bs_devs(void){	
+	if (g_test_hybrid_bs) {
+		g_md_dev = NULL;
+		if (g_back_dev) {
+			CU_ASSERT(spdk_mem_all_zero(g_back_dev_buffer, DEV_BUFFER_SIZE));
+		}
+		g_back_dev = NULL;
+	}
+}
+static uint8_t *
+get_md_buffer(void){
+	return (g_test_hybrid_bs)? g_md_dev_buffer: g_dev_buffer;
+}
 
 struct spdk_bs_super_block_ver1 {
 	uint8_t		signature[8];
@@ -193,8 +224,23 @@ ut_bs_reload(struct spdk_blob_store **bs, struct spdk_bs_opts *opts)
 	CU_ASSERT(g_bserrno == 0);
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	/* Load an existing blob store */
-	spdk_bs_load(dev, opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs)
+	{
+		if (opts) {
+			opts->clear_method = BS_CLEAR_WITH_NONE;
+			spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, opts, bs_op_with_handle_complete, NULL);
+		} else {
+			struct spdk_bs_opts opts;
+			spdk_bs_opts_init(&opts, sizeof(opts));
+			opts.clear_method = BS_CLEAR_WITH_NONE;
+			spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+		}
+	} else
+	{
+		spdk_bs_load(dev, opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -212,8 +258,22 @@ ut_bs_dirty_load(struct spdk_blob_store **bs, struct spdk_bs_opts *opts)
 	bs_free(*bs);
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	/* Load an existing blob store */
-	spdk_bs_load(dev, opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		if (opts) {
+			opts->clear_method = BS_CLEAR_WITH_NONE;
+			spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, opts, bs_op_with_handle_complete, NULL);
+		} else {
+			struct spdk_bs_opts opts;
+			spdk_bs_opts_init(&opts, sizeof(opts));
+			opts.clear_method = BS_CLEAR_WITH_NONE;
+			spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+		}
+	} else {
+		spdk_bs_load(dev, opts, bs_op_with_handle_complete, NULL);
+	}
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -222,6 +282,7 @@ ut_bs_dirty_load(struct spdk_blob_store **bs, struct spdk_bs_opts *opts)
 	g_bserrno = -1;
 }
 
+
 static void
 blob_init(void)
 {
@@ -229,15 +290,38 @@ blob_init(void)
 	struct spdk_bs_dev *dev;
 
 	dev = init_dev();
-
+	init_hybrid_bs_devs();
+	
+	((g_test_hybrid_bs)?(g_md_dev):(dev))->blocklen = 500;
 	/* should fail for an unsupported blocklen */
-	dev->blocklen = 500;
-	spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs)
+	{
+		struct spdk_bs_opts opts;
+		spdk_bs_opts_init(&opts, sizeof(opts));
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else
+	{
+		spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	}
+
 	poll_threads();
 	CU_ASSERT(g_bserrno == -EINVAL);
 
 	dev = init_dev();
-	spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	init_hybrid_bs_devs();
+	
+	if (g_test_hybrid_bs)
+	{
+		struct spdk_bs_opts opts;
+		spdk_bs_opts_init(&opts, sizeof(opts));
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else
+	{
+		spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	}
+
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -247,6 +331,7 @@ blob_init(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -660,11 +745,21 @@ blob_thin_provision(void)
 	spdk_blob_id blobid;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
+
 	spdk_bs_opts_init(&bs_opts, sizeof(bs_opts));
 	snprintf(bs_opts.bstype.bstype, sizeof(bs_opts.bstype.bstype), "TESTTYPE");
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs)
+	{	
+		bs_opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	} else
+	{
+		spdk_bs_init(dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	}
+
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -713,6 +808,8 @@ blob_thin_provision(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -1228,10 +1325,18 @@ blob_read_only(void)
 	int rc;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
 
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs)
+	{	
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else
+	{
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -1288,6 +1393,8 @@ blob_read_only(void)
 	spdk_bs_unload(bs, bs_op_complete, NULL);
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
+
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -2009,19 +2116,26 @@ blob_unmap(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 
-	/* Confirm that only 'allocated' clusters were unmapped */
-	for (i = 1; i < 11; i++) {
-		switch (i) {
-		case 2:
-		case 3:
-		case 4:
-		case 7:
-		case 9:
+	if (g_test_hybrid_bs) {
+		/* For hybrid bs, unmapping is always none -> all clusters should retain the written data */
+		for (i = 1; i < 11; i++) {
 			CU_ASSERT(g_dev_buffer[i * SPDK_BLOB_OPTS_CLUSTER_SZ] == 0xFF);
-			break;
-		default:
-			CU_ASSERT(g_dev_buffer[i * SPDK_BLOB_OPTS_CLUSTER_SZ] == 0);
-			break;
+		}
+	} else {
+		/* Confirm that only 'allocated' clusters were unmapped */
+		for (i = 1; i < 11; i++) {
+			switch (i) {
+			case 2:
+			case 3:
+			case 4:
+			case 7:
+			case 9:
+				CU_ASSERT(g_dev_buffer[i * SPDK_BLOB_OPTS_CLUSTER_SZ] == 0xFF);
+				break;
+			default:
+				CU_ASSERT(g_dev_buffer[i * SPDK_BLOB_OPTS_CLUSTER_SZ] == 0);
+				break;
+			}
 		}
 	}
 
@@ -2223,11 +2337,17 @@ bs_load(void)
 	struct spdk_blob_opts blob_opts;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {	
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2277,43 +2397,69 @@ bs_load(void)
 	g_blob = NULL;
 	g_blobid = 0;
 
-	super_block = (struct spdk_bs_super_block *)g_dev_buffer;
+	//Read the super blob from the appropirate buffer
+	super_block = (struct spdk_bs_super_block *)(get_md_buffer());
 	CU_ASSERT(super_block->clean == 1);
 
 	/* Load should fail for device with an unsupported blocklen */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	dev->blocklen = SPDK_BS_PAGE_SIZE * 2;
-	spdk_bs_load(dev, NULL, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		g_md_dev->blocklen = SPDK_BS_PAGE_SIZE * 2;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, NULL, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == -EINVAL);
 
 	/* Load should when max_md_ops is set to zero */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	opts.max_md_ops = 0;
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == -EINVAL);
 
 	/* Load should when max_channel_ops is set to zero */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	opts.max_channel_ops = 0;
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == -EINVAL);
 
 	/* Load an existing blob store */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
+
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
 	bs = g_bs;
 
-	super_block = (struct spdk_bs_super_block *)g_dev_buffer;
+	super_block = (struct spdk_bs_super_block *)(get_md_buffer());
 	CU_ASSERT(super_block->clean == 1);
 	CU_ASSERT(super_block->size == dev->blockcnt * dev->blocklen);
 
@@ -2353,22 +2499,35 @@ bs_load(void)
 
 	/* Load should fail: bdev size < saved size */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	dev->blockcnt /= 2;
 
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		g_md_dev->blockcnt /= 2;
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}	
 	poll_threads();
-
 	CU_ASSERT(g_bserrno == -EILSEQ);
 
 	/* Load should succeed: bdev size > saved size */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	dev->blockcnt *= 4;
 
-	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		g_md_dev->blockcnt *= 4;
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}	
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2382,12 +2541,19 @@ bs_load(void)
 	/* Test compatibility mode */
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	super_block->size = 0;
 	super_block->crc = blob_md_page_calc_crc(super_block);
 
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2409,7 +2575,7 @@ bs_load(void)
 	CU_ASSERT(g_bserrno == 0);
 	CU_ASSERT(super_block->clean == 1);
 	g_bs = NULL;
-
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -2519,12 +2685,19 @@ bs_load_custom_cluster_size(void)
 	uint64_t total_clusters;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	opts.cluster_sz = custom_cluster_size;
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+			opts.clear_method = BS_CLEAR_WITH_NONE;
+			spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2540,14 +2713,20 @@ bs_load_custom_cluster_size(void)
 	g_blob = NULL;
 	g_blobid = 0;
 
-	super_block = (struct spdk_bs_super_block *)g_dev_buffer;
+	super_block = (struct spdk_bs_super_block *)(get_md_buffer());
 	CU_ASSERT(super_block->clean == 1);
 
 	/* Load an existing blob store */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2556,7 +2735,7 @@ bs_load_custom_cluster_size(void)
 	CU_ASSERT(cluster_sz == bs->cluster_sz);
 	CU_ASSERT(total_clusters == bs->total_clusters);
 
-	super_block = (struct spdk_bs_super_block *)g_dev_buffer;
+	super_block = (struct spdk_bs_super_block *)(get_md_buffer());
 	CU_ASSERT(super_block->clean == 1);
 	CU_ASSERT(super_block->size == dev->blockcnt * dev->blocklen);
 
@@ -2565,6 +2744,7 @@ bs_load_custom_cluster_size(void)
 	CU_ASSERT(g_bserrno == 0);
 	CU_ASSERT(super_block->clean == 1);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -2575,11 +2755,17 @@ bs_type(void)
 	struct spdk_bs_opts opts;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2590,20 +2776,31 @@ bs_type(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 	g_blob = NULL;
 	g_blobid = 0;
 
 	/* Load non existing blobstore type */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "NONEXISTING");
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno != 0);
 
 	/* Load with empty blobstore type */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	memset(opts.bstype.bstype, 0, sizeof(opts.bstype.bstype));
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2613,11 +2810,17 @@ bs_type(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 
 	/* Initialize a new blob store with empty bstype */
 	dev = init_dev();
 	memset(opts.bstype.bstype, 0, sizeof(opts.bstype.bstype));
-	spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	}
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2627,18 +2830,29 @@ bs_type(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 
 	/* Load non existing blobstore type */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "NONEXISTING");
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}	
 	poll_threads();
 	CU_ASSERT(g_bserrno != 0);
 
 	/* Load with empty blobstore type */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	memset(opts.bstype.bstype, 0, sizeof(opts.bstype.bstype));
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2648,6 +2862,7 @@ bs_type(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -2660,11 +2875,17 @@ bs_super_block(void)
 	struct spdk_bs_super_block_ver1 super_block_v1;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2675,21 +2896,28 @@ bs_super_block(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 	g_blob = NULL;
 	g_blobid = 0;
 
 	/* Load an existing blob store with version newer than supported */
-	super_block = (struct spdk_bs_super_block *)g_dev_buffer;
+	super_block = (struct spdk_bs_super_block *)(get_md_buffer());
 	super_block->version++;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	memset(opts.bstype.bstype, 0, sizeof(opts.bstype.bstype));
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}	
 	poll_threads();
 	CU_ASSERT(g_bserrno != 0);
 
 	/* Create a new blob store with super block version 1 */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	super_block_v1.version = 1;
 	memcpy(super_block_v1.signature, "SPDKBLOB", sizeof(super_block_v1.signature));
 	super_block_v1.length = 0x1000;
@@ -2704,10 +2932,15 @@ bs_super_block(void)
 	super_block_v1.md_len = 0x40;
 	memset(super_block_v1.reserved, 0, 4036);
 	super_block_v1.crc = blob_md_page_calc_crc(&super_block_v1);
-	memcpy(g_dev_buffer, &super_block_v1, sizeof(struct spdk_bs_super_block_ver1));
+	memcpy(get_md_buffer(), &super_block_v1, sizeof(struct spdk_bs_super_block_ver1));
 
 	memset(opts.bstype.bstype, 0, sizeof(opts.bstype.bstype));
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2717,6 +2950,7 @@ bs_super_block(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -2728,6 +2962,7 @@ bs_test_recover_cluster_count(void)
 	struct spdk_bs_opts opts;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
 
@@ -2750,10 +2985,15 @@ bs_test_recover_cluster_count(void)
 	super_block.io_unit_size = 0x1000;
 	memset(super_block.reserved, 0, 4000);
 	super_block.crc = blob_md_page_calc_crc(&super_block);
-	memcpy(g_dev_buffer, &super_block, sizeof(struct spdk_bs_super_block));
+	memcpy(get_md_buffer(), &super_block, sizeof(struct spdk_bs_super_block));
 
 	memset(opts.bstype.bstype, 0, sizeof(opts.bstype.bstype));
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {	
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2765,6 +3005,7 @@ bs_test_recover_cluster_count(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 /*
@@ -2807,11 +3048,17 @@ bs_cluster_sz(void)
 
 	/* Set cluster size to zero */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	opts.cluster_sz = 0;
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == -EINVAL);
 	SPDK_CU_ASSERT_FATAL(g_bs == NULL);
@@ -2821,11 +3068,17 @@ bs_cluster_sz(void)
 	 * to work it is required to be at least twice the blobstore page size.
 	 */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	opts.cluster_sz = SPDK_BS_PAGE_SIZE;
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == -ENOMEM);
 	SPDK_CU_ASSERT_FATAL(g_bs == NULL);
@@ -2835,23 +3088,36 @@ bs_cluster_sz(void)
 	 * to work it is required to be at least twice the blobstore page size.
 	 */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	opts.cluster_sz = SPDK_BS_PAGE_SIZE - 1;
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == -EINVAL);
 	SPDK_CU_ASSERT_FATAL(g_bs == NULL);
 
 	/* Set cluster size to twice the default */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	opts.cluster_sz *= 2;
 	cluster_sz = opts.cluster_sz;
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2867,6 +3133,7 @@ bs_cluster_sz(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 /*
@@ -2934,12 +3201,19 @@ bs_resize_md(void)
 
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	opts.cluster_sz = CLUSTER_PAGE_COUNT * 4096;
 	cluster_sz = opts.cluster_sz;
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {	
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
+
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -2981,6 +3255,7 @@ bs_resize_md(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -2991,7 +3266,15 @@ bs_destroy(void)
 
 	/* Initialize a new blob store */
 	dev = init_dev();
-	spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	init_hybrid_bs_devs();
+	if (g_test_hybrid_bs) {
+		struct spdk_bs_opts opts;
+		spdk_bs_opts_init(&opts, sizeof(opts));
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -3005,10 +3288,19 @@ bs_destroy(void)
 
 	/* Loading an non-existent blob store should fail. */
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 	dev = init_dev();
+	init_hybrid_bs_devs();
 
 	g_bserrno = 0;
-	spdk_bs_load(dev, NULL, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		struct spdk_bs_opts opts;
+		spdk_bs_opts_init(&opts, sizeof(opts));
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, NULL, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno != 0);
 }
@@ -3029,11 +3321,18 @@ blob_serialize_test(void)
 	int rc;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 
 	/* Initialize a new blobstore with very small clusters */
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	opts.cluster_sz = dev->blocklen * 8;
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -3100,6 +3399,7 @@ blob_serialize_test(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -3121,7 +3421,7 @@ blob_crc(void)
 
 	page_num = bs_blobid_to_page(blobid);
 	index = DEV_BUFFER_BLOCKLEN * (bs->md_start + page_num);
-	page = (struct spdk_blob_md_page *)&g_dev_buffer[index];
+	page = (struct spdk_blob_md_page *)&((get_md_buffer())[index]);
 	page->crc = 0;
 
 	spdk_bs_open_blob(bs, blobid, blob_op_with_handle_complete, NULL);
@@ -3143,7 +3443,16 @@ super_block_crc(void)
 	struct spdk_bs_super_block *super_block;
 
 	dev = init_dev();
-	spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	init_hybrid_bs_devs();
+	if (g_test_hybrid_bs) {
+		struct spdk_bs_opts opts;
+		spdk_bs_opts_init(&opts, sizeof(opts));
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	}
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -3153,14 +3462,23 @@ super_block_crc(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 
-	super_block = (struct spdk_bs_super_block *)g_dev_buffer;
+	super_block = (struct spdk_bs_super_block *)(get_md_buffer());
 	super_block->crc = 0;
 	dev = init_dev();
+	init_hybrid_bs_devs();
 
 	/* Load an existing blob store */
 	g_bserrno = 0;
-	spdk_bs_load(dev, NULL, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		struct spdk_bs_opts opts;
+		spdk_bs_opts_init(&opts, sizeof(opts));
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, NULL, bs_op_with_handle_complete, NULL);
+	}	
 	poll_threads();
 	CU_ASSERT(g_bserrno == -EILSEQ);
 }
@@ -3422,7 +3740,7 @@ blob_dirty_shutdown(void)
 	page_num = bs_blobid_to_page(blobid2);
 
 	index = DEV_BUFFER_BLOCKLEN * (bs->md_start + page_num);
-	page = (struct spdk_blob_md_page *)&g_dev_buffer[index];
+	page = (struct spdk_blob_md_page *)(&((get_md_buffer())[index]));
 	page->sequence_num = 1;
 	page->crc = blob_md_page_calc_crc(page);
 
@@ -3461,10 +3779,14 @@ blob_flags(void)
 	blobid_data_ro = spdk_blob_get_id(blob_data_ro);
 
 	ut_spdk_blob_opts_init(&blob_opts);
-	blob_opts.clear_method = BLOB_CLEAR_WITH_WRITE_ZEROES;
+	if (g_test_hybrid_bs){
+		blob_opts.clear_method = BLOB_CLEAR_WITH_NONE;
+	} else {
+		blob_opts.clear_method = BLOB_CLEAR_WITH_WRITE_ZEROES;
+	}	
 	blob_md_ro = ut_blob_create_and_open(bs, &blob_opts);
 	blobid_md_ro = spdk_blob_get_id(blob_md_ro);
-	CU_ASSERT((blob_md_ro->md_ro_flags & SPDK_BLOB_MD_RO_FLAGS_MASK) == BLOB_CLEAR_WITH_WRITE_ZEROES);
+	CU_ASSERT((blob_md_ro->md_ro_flags & SPDK_BLOB_MD_RO_FLAGS_MASK) == blob_opts.clear_method);
 
 	/* Change the size of blob_data_ro to check if flags are serialized
 	 * when blob has non zero number of extents */
@@ -3577,7 +3899,7 @@ bs_version(void)
 	 *  test that the version does not get modified automatically
 	 *  when loading and unloading the blobstore.
 	 */
-	super = (struct spdk_bs_super_block *)&g_dev_buffer[0];
+	super = (struct spdk_bs_super_block *)&((get_md_buffer())[0]);
 	CU_ASSERT(super->version == SPDK_BS_VERSION);
 	CU_ASSERT(super->clean == 1);
 	super->version = 2;
@@ -3587,7 +3909,7 @@ bs_version(void)
 	 *  region on "disk".  We will use this to ensure blob IDs are
 	 *  correctly reconstructed.
 	 */
-	memset(&g_dev_buffer[super->used_blobid_mask_start * SPDK_BS_PAGE_SIZE], 0,
+	memset(&((get_md_buffer())[super->used_blobid_mask_start * SPDK_BS_PAGE_SIZE]), 0,
 	       super->used_blobid_mask_len * SPDK_BS_PAGE_SIZE);
 	super->used_blobid_mask_start = 0;
 	super->used_blobid_mask_len = 0;
@@ -3595,7 +3917,17 @@ bs_version(void)
 
 	/* Load an existing blob store */
 	dev = init_dev();
-	spdk_bs_load(dev, NULL, bs_op_with_handle_complete, NULL);
+	init_hybrid_bs_devs();
+
+	if (g_test_hybrid_bs) {	
+		struct spdk_bs_opts opts;
+		spdk_bs_opts_init(&opts, sizeof(opts));
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, NULL, bs_op_with_handle_complete, NULL);
+	}
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -3619,12 +3951,21 @@ bs_version(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 	CU_ASSERT(super->version == 2);
 	CU_ASSERT(super->used_blobid_mask_start == 0);
 	CU_ASSERT(super->used_blobid_mask_len == 0);
 
 	dev = init_dev();
-	spdk_bs_load(dev, NULL, bs_op_with_handle_complete, NULL);
+	init_hybrid_bs_devs();
+	if (g_test_hybrid_bs) {	
+		struct spdk_bs_opts opts;
+		spdk_bs_opts_init(&opts, sizeof(opts));
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, NULL, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -3929,6 +4270,7 @@ blob_thin_prov_rw(void)
 
 	write_bytes = g_dev_write_bytes;
 	read_bytes = g_dev_read_bytes;
+	g_back_dev_read_bytes = 0;
 
 	/* Perform write on thread 1. That will allocate cluster on thread 0 via send_msg */
 	set_thread(1);
@@ -3950,9 +4292,9 @@ blob_thin_prov_rw(void)
 	 * read 0 bytes */
 	if (g_use_extent_table) {
 		/* Add one more page for EXTENT_PAGE write */
-		CU_ASSERT(g_dev_write_bytes - write_bytes == page_size * 22);
+		CU_ASSERT(g_dev_write_bytes - (g_back_dev_read_bytes + write_bytes) == page_size * 22);
 	} else {
-		CU_ASSERT(g_dev_write_bytes - write_bytes == page_size * 21);
+		CU_ASSERT(g_dev_write_bytes - (g_back_dev_read_bytes + write_bytes) == page_size * 21);
 	}
 	CU_ASSERT(g_dev_read_bytes - read_bytes == 0);
 
@@ -3998,10 +4340,17 @@ blob_thin_prov_write_count_io(void)
 	 * buffers).
 	 */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&bs_opts, sizeof(bs_opts));
 	bs_opts.cluster_sz = CLUSTER_SZ;
 
-	spdk_bs_init(dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		bs_opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	}
+
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -4040,6 +4389,7 @@ blob_thin_prov_write_count_io(void)
 	for (i = 0; i < 8; i++) {
 		write_bytes = g_dev_write_bytes;
 		read_bytes = g_dev_read_bytes;
+		g_back_dev_read_bytes = 0;
 
 		g_bserrno = -1;
 		spdk_blob_io_write(blob, ch, payload_write, pages_per_extent_page * i, 1, blob_op_complete, NULL);
@@ -4052,13 +4402,13 @@ blob_thin_prov_write_count_io(void)
 			/* For legacy metadata, we should have written two pages - one for the
 			 * write I/O itself, another for the blob's primary metadata.
 			 */
-			CU_ASSERT((g_dev_write_bytes - write_bytes) / page_size == 2);
+			CU_ASSERT((g_dev_write_bytes - (g_back_dev_read_bytes + write_bytes)) / page_size == 2);
 		} else {
 			/* For extent table metadata, we should have written three pages - one
 			 * for the write I/O, one for the extent page, one for the blob's primary
 			 * metadata.
 			 */
-			CU_ASSERT((g_dev_write_bytes - write_bytes) / page_size == 3);
+			CU_ASSERT((g_dev_write_bytes - (g_back_dev_read_bytes + write_bytes)) / page_size == 3);
 		}
 
 		/* The write should have synced the metadata already.  Do another sync here
@@ -4066,6 +4416,7 @@ blob_thin_prov_write_count_io(void)
 		 */
 		write_bytes = g_dev_write_bytes;
 		read_bytes = g_dev_read_bytes;
+		g_back_dev_read_bytes = 0;
 
 		g_bserrno = -1;
 		spdk_blob_sync_md(blob, blob_op_complete, NULL);
@@ -4089,7 +4440,7 @@ blob_thin_prov_write_count_io(void)
 		 * For legacy metadata, we should have written the I/O and the primary metadata page.
 		 * For extent table metadata, we should have written the I/O and the extent metadata page.
 		 */
-		CU_ASSERT((g_dev_write_bytes - write_bytes) / page_size == 2);
+		CU_ASSERT((g_dev_write_bytes - (g_back_dev_read_bytes + write_bytes)) / page_size == 2);
 	}
 
 	ut_blob_close_and_delete(bs, blob);
@@ -4104,6 +4455,7 @@ blob_thin_prov_write_count_io(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -4149,6 +4501,7 @@ blob_thin_prov_rle(void)
 
 	write_bytes = g_dev_write_bytes;
 	read_bytes = g_dev_read_bytes;
+	g_back_dev_read_bytes = 0;
 
 	/* Issue write to second cluster in a blob */
 	memset(payload_write, 0xE5, sizeof(payload_write));
@@ -4160,9 +4513,9 @@ blob_thin_prov_rle(void)
 	 * read 0 bytes */
 	if (g_use_extent_table) {
 		/* Add one more page for EXTENT_PAGE write */
-		CU_ASSERT(g_dev_write_bytes - write_bytes == page_size * 12);
+		CU_ASSERT(g_dev_write_bytes - (g_back_dev_read_bytes + write_bytes) == page_size * 12);
 	} else {
-		CU_ASSERT(g_dev_write_bytes - write_bytes == page_size * 11);
+		CU_ASSERT(g_dev_write_bytes - (g_back_dev_read_bytes + write_bytes) == page_size * 11);
 	}
 	CU_ASSERT(g_dev_read_bytes - read_bytes == 0);
 
@@ -4312,11 +4665,17 @@ bs_load_iter_test(void)
 	struct spdk_bs_opts opts;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -4346,13 +4705,19 @@ bs_load_iter_test(void)
 	CU_ASSERT(g_bserrno == 0);
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
 	opts.iter_cb_fn = test_iter;
 	opts.iter_cb_arg = &iter_ctx;
 
 	/* Test blob iteration during load after a clean shutdown. */
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -4362,6 +4727,7 @@ bs_load_iter_test(void)
 	bs_free(bs);
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&opts, sizeof(opts));
 	snprintf(opts.bstype.bstype, sizeof(opts.bstype.bstype), "TESTTYPE");
 	opts.iter_cb_fn = test_iter;
@@ -4369,7 +4735,12 @@ bs_load_iter_test(void)
 	opts.iter_cb_arg = &iter_ctx;
 
 	/* Test blob iteration during load after a dirty shutdown. */
-	spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -4379,6 +4750,7 @@ bs_load_iter_test(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -4677,6 +5049,8 @@ _blob_inflate_rw(bool decouple_parent)
 			   pages_per_cluster, blob_op_complete, NULL);
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
+	//TODO - check explicitly that
+	//	free_clusters = pages_per_payload - pages_per_cluster + spdk_bs_free_cluster_count(bs)
 	CU_ASSERT(free_clusters != spdk_bs_free_cluster_count(bs));
 
 	/* 2) Create snapshot from blob (first level) */
@@ -4916,10 +5290,16 @@ blob_relations(void)
 	spdk_blob_id ids[10] = {};
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&bs_opts, sizeof(bs_opts));
 	snprintf(bs_opts.bstype.bstype, sizeof(bs_opts.bstype.bstype), "TESTTYPE");
 
-	spdk_bs_init(dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		bs_opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -5210,6 +5590,7 @@ blob_relations(void)
 	CU_ASSERT(g_bserrno == 0);
 
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 /**
@@ -5242,10 +5623,17 @@ blob_relations2(void)
 	spdk_blob_id ids[10] = {};
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&bs_opts, sizeof(bs_opts));
 	snprintf(bs_opts.bstype.bstype, sizeof(bs_opts.bstype.bstype), "TESTTYPE");
 
-	spdk_bs_init(dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		bs_opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	}
+
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -5590,6 +5978,7 @@ blob_relations2(void)
 	CU_ASSERT(g_bserrno == 0);
 
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 /**
@@ -5615,10 +6004,17 @@ blob_relations3(void)
 	spdk_blob_id blobid, snapshotid0, snapshotid1, snapshotid2;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	spdk_bs_opts_init(&bs_opts, sizeof(bs_opts));
 	snprintf(bs_opts.bstype.bstype, sizeof(bs_opts.bstype.bstype), "TESTTYPE");
 
-	spdk_bs_init(dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		bs_opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	}
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -5697,6 +6093,7 @@ blob_relations3(void)
 	CU_ASSERT(g_bserrno == 0);
 
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 }
 
 static void
@@ -5706,7 +6103,7 @@ blobstore_clean_power_failure(void)
 	struct spdk_blob *blob;
 	struct spdk_power_failure_thresholds thresholds = {};
 	bool clean = false;
-	struct spdk_bs_super_block *super = (struct spdk_bs_super_block *)&g_dev_buffer[0];
+	struct spdk_bs_super_block *super = (struct spdk_bs_super_block *)&((get_md_buffer())[0]);
 	struct spdk_bs_super_block super_copy = {};
 
 	thresholds.general_threshold = 1;
@@ -5778,8 +6175,17 @@ blob_delete_snapshot_power_failure(void)
 	thresholds.general_threshold = 1;
 	while (!deleted) {
 		dev = init_dev();
+		init_hybrid_bs_devs();
 
-		spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+		if (g_test_hybrid_bs) {
+			struct spdk_bs_opts opts;
+			spdk_bs_opts_init(&opts, sizeof(opts));
+			opts.clear_method = BS_CLEAR_WITH_NONE;
+			spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+		} else {
+			spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+		}
+		
 		poll_threads();
 		CU_ASSERT(g_bserrno == 0);
 		SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -5886,8 +6292,16 @@ blob_create_snapshot_power_failure(void)
 	thresholds.general_threshold = 1;
 	while (!created) {
 		dev = init_dev();
+		init_hybrid_bs_devs();
 
-		spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+		if (g_test_hybrid_bs) {
+			struct spdk_bs_opts opts;
+			spdk_bs_opts_init(&opts, sizeof(opts));
+			opts.clear_method = BS_CLEAR_WITH_NONE;
+			spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+		} else {
+			spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+		}
 		poll_threads();
 		CU_ASSERT(g_bserrno == 0);
 		SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -6550,11 +6964,20 @@ blob_io_unit(void)
 
 	/* Try to initialize a new blob store with unsupported io_unit */
 	dev = init_dev();
+	init_hybrid_bs_devs();
+	
 	dev->blocklen = 512;
 	dev->blockcnt =  DEV_BUFFER_SIZE / dev->blocklen;
-
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &bsopts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		g_md_dev->blocklen = dev->blocklen;
+		g_md_dev->blockcnt =  dev->blockcnt;
+		bsopts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &bsopts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &bsopts, bs_op_with_handle_complete, NULL);
+	}
+	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -6667,6 +7090,7 @@ blob_io_unit(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 	g_blob = NULL;
 	g_blobid = 0;
 }
@@ -6687,11 +7111,19 @@ blob_io_unit_compatibility(void)
 
 	/* Try to initialize a new blob store with unsupported io_unit */
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	dev->blocklen = 512;
 	dev->blockcnt =  DEV_BUFFER_SIZE / dev->blocklen;
 
 	/* Initialize a new blob store */
-	spdk_bs_init(dev, &bsopts, bs_op_with_handle_complete, NULL);
+	if (g_test_hybrid_bs) {
+		g_md_dev->blocklen = dev->blocklen;
+		g_md_dev->blockcnt =  dev->blockcnt;
+		bsopts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &bsopts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, &bsopts, bs_op_with_handle_complete, NULL);
+	}	
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -6705,16 +7137,24 @@ blob_io_unit_compatibility(void)
 	CU_ASSERT(g_bserrno == 0);
 
 	/* Modify super block to behave like older version.
-	 * Check if loaded io unit size equals SPDK_BS_PAGE_SIZE */
-	super = (struct spdk_bs_super_block *)&g_dev_buffer[0];
+	 * Check if loaded io unit size equals SPDK_BS_PAGE_SIZE */	
+	super = (struct spdk_bs_super_block *)&((get_md_buffer())[0]);
+
 	super->io_unit_size = 0;
 	super->crc = blob_md_page_calc_crc(super);
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	dev->blocklen = 512;
 	dev->blockcnt =  DEV_BUFFER_SIZE / dev->blocklen;
-
-	spdk_bs_load(dev, &bsopts, bs_op_with_handle_complete, NULL);
+	
+	if (g_test_hybrid_bs) {
+		g_md_dev->blocklen = dev->blocklen;
+		g_md_dev->blockcnt =  dev->blockcnt;
+		spdk_bs_load_with_md_dev(dev, g_md_dev, g_back_dev, &bsopts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_load(dev, &bsopts, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
@@ -6728,6 +7168,7 @@ blob_io_unit_compatibility(void)
 	CU_ASSERT(g_bserrno == 0);
 
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
 	g_blob = NULL;
 	g_blobid = 0;
 }
@@ -7063,8 +7504,18 @@ suite_bs_setup(void)
 	struct spdk_bs_dev *dev;
 
 	dev = init_dev();
+	init_hybrid_bs_devs();
 	memset(g_dev_buffer, 0, DEV_BUFFER_SIZE);
-	spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	memset(g_md_dev_buffer, 0, DEV_BUFFER_SIZE);
+	memset(g_back_dev_buffer, 0, DEV_BUFFER_SIZE);
+	if (g_test_hybrid_bs) {
+		struct spdk_bs_opts opts;
+		spdk_bs_opts_init(&opts, sizeof(opts));
+		opts.clear_method = BS_CLEAR_WITH_NONE;
+		spdk_bs_init_with_md_dev(dev, g_md_dev, g_back_dev, &opts, bs_op_with_handle_complete, NULL);
+	} else {
+		spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	CU_ASSERT(g_bs != NULL);
@@ -7077,6 +7528,9 @@ suite_bs_cleanup(void)
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 	g_bs = NULL;
+	cleanup_hybrid_bs_devs();
+	memset(g_back_dev_buffer, 0, DEV_BUFFER_SIZE);
+	memset(g_md_dev_buffer, 0, DEV_BUFFER_SIZE);
 	memset(g_dev_buffer, 0, DEV_BUFFER_SIZE);
 }
 
@@ -7149,12 +7603,14 @@ suite_blob_cleanup(void)
 
 int main(int argc, char **argv)
 {
-	CU_pSuite	suite, suite_bs, suite_blob;
+	int test_suites_iterations = 0;
+	CU_pSuite	suite, suite_bs, suite_blob, suite_hybrid_bd;
 	unsigned int	num_failures;
 
 	CU_set_error_action(CUEA_ABORT);
 	CU_initialize_registry();
 
+	//TODO - Reorder suites/tests so that tests are added after the respective suite is created
 	suite = CU_add_suite("blob", NULL, NULL);
 	suite_bs = CU_add_suite_with_setup_and_teardown("blob_bs", NULL, NULL,
 			suite_bs_setup, suite_bs_cleanup);
@@ -7233,17 +7689,30 @@ int main(int argc, char **argv)
 	allocate_threads(2);
 	set_thread(0);
 
-	g_dev_buffer = calloc(1, DEV_BUFFER_SIZE);
-
+	g_dev_buffer 		= calloc(1, DEV_BUFFER_SIZE);
+	g_md_dev_buffer 	= calloc(1, DEV_BUFFER_SIZE);
+	g_back_dev_buffer 	= calloc(1, DEV_BUFFER_SIZE);
+	
 	CU_basic_set_mode(CU_BRM_VERBOSE);
-	g_use_extent_table = false;
-	CU_basic_run_tests();
-	num_failures = CU_get_number_of_failures();
-	g_use_extent_table = true;
-	CU_basic_run_tests();
-	num_failures += CU_get_number_of_failures();
+	
+	g_test_hybrid_bs = false;
+	num_failures = 0;
+	for (test_suites_iterations = 0; test_suites_iterations < 2; test_suites_iterations++)
+	{
+		g_use_extent_table = false;
+		CU_basic_run_tests();
+		num_failures += CU_get_number_of_failures();
+		g_use_extent_table = true;
+		CU_basic_run_tests();
+		num_failures += CU_get_number_of_failures();
+
+		g_test_hybrid_bs = !g_test_hybrid_bs;
+	}
+
 	CU_cleanup_registry();
 
+	free(g_back_dev_buffer);
+	free(g_md_dev_buffer);
 	free(g_dev_buffer);
 
 	free_threads();
