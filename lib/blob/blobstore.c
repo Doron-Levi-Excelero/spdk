@@ -4522,7 +4522,9 @@ bs_parse_super(struct spdk_bs_load_ctx *ctx)
 	ctx->bs->total_data_clusters = ctx->bs->total_clusters;
 	if (ctx->bs->md_dev == NULL) {
 		ctx->bs->total_data_clusters -= spdk_divide_round_up(
-				ctx->bs->md_start + ctx->bs->md_len, ctx->bs->pages_per_cluster);
+			ctx->bs->md_start + ctx->bs->md_len, ctx->bs->pages_per_cluster);
+	} else {
+		ctx->bs->total_data_clusters -= 1;
 	}
 	ctx->bs->super_blob = ctx->super->super_blob;
 	memcpy(&ctx->bs->bstype, &ctx->super->bstype, sizeof(ctx->super->bstype));
