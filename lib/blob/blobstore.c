@@ -4644,9 +4644,16 @@ _spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 
 	SPDK_DEBUGLOG(blob, "Loading blobstore from dev %p\n", dev);
 
-	if ((SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) {
+	if (((NULL == md_dev) && (SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) ||
+		((NULL != md_dev) && (SPDK_BS_PAGE_SIZE % md_dev->blocklen) != 0)) {
 		SPDK_DEBUGLOG(blob, "unsupported dev block length of %d\n", dev->blocklen);
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}		
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
 	}
@@ -4660,6 +4667,12 @@ _spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 
 	if (opts.max_md_ops == 0 || opts.max_channel_ops == 0) {
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}	
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
 	}
@@ -4667,6 +4680,12 @@ _spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 	err = bs_alloc(dev, md_dev, back_dev, &opts, &bs, &ctx);
 	if (err) {
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, err);
 		return;
 	}
@@ -5130,13 +5149,17 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 	uint64_t		lba, lba_count;
 
 	SPDK_DEBUGLOG(blob, "Initializing blobstore on dev %p\n", dev);
-
-	if ((SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) {
+	if (((NULL == md_dev) && (SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) ||
+		((NULL != md_dev) && (SPDK_BS_PAGE_SIZE % md_dev->blocklen) != 0)) {
 		SPDK_ERRLOG("unsupported dev block length of %d\n",
 			    dev->blocklen);
 		dev->destroy(dev);
-		if (md_dev != NULL)
+		if (md_dev != NULL) {
 			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
 	}
@@ -5150,8 +5173,12 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 
 	if (bs_opts_verify(&opts) != 0) {
 		dev->destroy(dev);
-		if (md_dev != NULL)
+		if (md_dev != NULL) {
 			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
 	}
@@ -5160,6 +5187,9 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 		if (bs_opts_verify_md(&opts) != 0) {
 			dev->destroy(dev);
 			md_dev->destroy(md_dev);
+			if (back_dev != NULL) {
+				back_dev->destroy(back_dev);
+			}
 			cb_fn(cb_arg, NULL, -EINVAL);
 			return;
 		}
@@ -5168,8 +5198,12 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 	rc = bs_alloc(dev, md_dev, back_dev, &opts, &bs, &ctx);
 	if (rc) {
 		dev->destroy(dev);
-		if (md_dev != NULL)
+		if (md_dev != NULL) {
 			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, rc);
 		return;
 	}
