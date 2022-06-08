@@ -7581,6 +7581,267 @@ ut_blob_close_and_delete(struct spdk_blob_store *bs, struct spdk_blob *blob)
 	g_bserrno = -1;
 }
 
+static bool
+check_blob_buffer(struct spdk_blob *blob, struct spdk_io_channel *channel, uint64_t payload_size, uint64_t pages_per_payload, uint8_t *work_buffer, uint8_t *desired_payload)
+{
+	memset(work_buffer, 0xFF, payload_size);
+	spdk_blob_io_read(blob, channel, work_buffer, 0, pages_per_payload, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	return (memcmp(work_buffer, desired_payload, payload_size) == 0);
+}
+static void
+ut_hybrid_bs(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob *blob, *snapshot, *snapshot2, *clone;
+	struct spdk_io_channel *channel;
+	struct spdk_blob_opts opts;
+	spdk_blob_id blobid, snapshotid, snapshot2id, cloneid;
+	uint64_t free_clusters;
+	uint64_t cluster_size;
+
+	uint64_t payload_size;
+	uint8_t *work_buffer, *desired_blob_buffer, *desired_snapshot_1_buffer, *desired_clone_buffer, *desired_snapshot_2_buffer;
+
+	uint64_t pages_per_cluster;
+	uint64_t pages_per_payload;
+
+	int back_dev_fill_value = 0x1;
+	int dev_fill_value = 0x2;
+	int clusters_to_test = 1;
+
+	int page_size = spdk_bs_get_page_size(bs);
+
+	free_clusters = spdk_bs_free_cluster_count(bs);
+	cluster_size = spdk_bs_get_cluster_size(bs);
+	pages_per_cluster = cluster_size / spdk_bs_get_page_size(bs);
+	//We'll only test pages on the first cluster
+	pages_per_payload = pages_per_cluster * clusters_to_test;
+	payload_size = cluster_size * clusters_to_test;
+
+	//Fill backing_dev buffer with back_dev_fill_value:
+	memset(g_back_dev_buffer, back_dev_fill_value, payload_size);
+	//Once a cluster has been allocated, the data is read from the g_dev_buffer	
+	memset(g_dev_buffer, dev_fill_value, payload_size);
+
+	work_buffer = malloc(payload_size);
+	SPDK_CU_ASSERT_FATAL(work_buffer != NULL);
+	//Before writing to blob, all data should be '0x1' (from g_back_dev_buffer)
+	//After writing to the blob - 
+	//Page 0 should be '0xA'
+	//the rest - '0x1' (from g_back_dev_buffer)
+	desired_blob_buffer = malloc(payload_size);
+	SPDK_CU_ASSERT_FATAL(desired_blob_buffer != NULL);
+	//Page 0 should be '0xA'
+	//the rest - '0x1' (from g_back_dev_buffer)
+	desired_snapshot_1_buffer = malloc(payload_size);
+	SPDK_CU_ASSERT_FATAL(desired_snapshot_1_buffer != NULL);
+	
+	//desired_blob_buffer - 
+	//After writing 0xB's to the blob's second page, desired_blob_buffer:
+	//Page 0 should be '0xA'
+	//Page 1 should be '0xB'
+	//the rest - '0x1' (from g_back_dev_buffer)
+
+	//Before writing to clone - should be as desired_snapshot_1_buffer
+	//After writing 0xC's to the clone's third page, desired_clone_buffer:
+	//Page 0 should be '0xA'
+	//Page 1 should be '0x1' (from g_back_dev_buffer)
+	//Page 2 should be '0xC'
+	//the rest - '0x1' (from g_back_dev_buffer)
+	//desired_clone_buffer
+	desired_clone_buffer = malloc(payload_size);
+	SPDK_CU_ASSERT_FATAL(desired_clone_buffer != NULL);
+		
+	//Page 0 should be '0xA'
+	//Page 1 should be '0xB'
+	//the rest - '0x1' (from g_back_dev_buffer)
+	desired_snapshot_2_buffer = malloc(payload_size);
+	SPDK_CU_ASSERT_FATAL(desired_snapshot_2_buffer != NULL);
+
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+
+	/* Create blob */
+	ut_spdk_blob_opts_init(&opts);
+	opts.thin_provision = true;
+	opts.num_clusters = clusters_to_test;
+
+	blob = ut_blob_create_and_open(bs, &opts);
+	blobid = spdk_blob_get_id(blob);
+	CU_ASSERT(free_clusters == spdk_bs_free_cluster_count(bs));
+	CU_ASSERT(spdk_blob_get_num_clusters(blob) == opts.num_clusters);
+
+	/* 1) Initial read should read from back_dev */
+	memset(desired_blob_buffer, back_dev_fill_value, payload_size);
+	CU_ASSERT(check_blob_buffer(blob, channel, payload_size, pages_per_payload, work_buffer, desired_blob_buffer));
+
+	/* Fill first page with 0xA, the rest should 0 */
+	memset(desired_blob_buffer, 0xA, page_size);
+	memset(desired_blob_buffer + page_size, back_dev_fill_value, payload_size - page_size);
+	//Write only the first page
+	memset(work_buffer, 0xA, page_size);
+	spdk_blob_io_write(blob, channel, work_buffer, 0, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(check_blob_buffer(blob, channel, payload_size, pages_per_payload, work_buffer, desired_blob_buffer));
+
+	/* Create snapshot from blob */
+	spdk_bs_create_snapshot(bs, blobid, NULL, blob_op_with_id_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(g_blobid != SPDK_BLOBID_INVALID);
+	snapshotid = g_blobid;
+
+	/* Make sure blob still contains the same data after a snapshot was created */
+	CU_ASSERT(check_blob_buffer(blob, channel, payload_size, pages_per_payload, work_buffer, desired_blob_buffer));
+	
+	spdk_bs_open_blob(bs, snapshotid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	snapshot = g_blob;
+	CU_ASSERT(snapshot->data_ro == true);
+	CU_ASSERT(snapshot->md_ro == true);
+	CU_ASSERT(spdk_blob_get_num_clusters(snapshot) == (uint64_t)clusters_to_test);
+
+	memcpy(desired_snapshot_1_buffer, desired_blob_buffer, payload_size);
+	/* Make sure snapshot 1's data is valid */
+	CU_ASSERT(check_blob_buffer(snapshot, channel, payload_size, pages_per_payload, work_buffer, desired_snapshot_1_buffer));
+	
+	/* Fill blob's second page with 0xB */	
+	memset(desired_blob_buffer + 1 * page_size, 0xB, page_size);
+	memset(work_buffer + 1 * page_size, 0xB, page_size);
+	spdk_blob_io_write(blob, channel, work_buffer + page_size, 1, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(check_blob_buffer(blob, channel, payload_size, pages_per_payload, work_buffer, desired_blob_buffer));
+	CU_ASSERT(check_blob_buffer(snapshot, channel, payload_size, pages_per_payload, work_buffer, desired_snapshot_1_buffer));
+	
+	//AK: - TODO - Can't make a clone of the blob once snapshots were created?
+	spdk_bs_create_clone(bs, snapshotid, NULL, blob_op_with_id_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(g_blobid != SPDK_BLOBID_INVALID);
+	cloneid = g_blobid;
+
+	spdk_bs_open_blob(bs, cloneid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	clone = g_blob;
+	CU_ASSERT(clone->data_ro == false);
+	CU_ASSERT(clone->md_ro == false);
+	CU_ASSERT(spdk_blob_get_num_clusters(clone) == (uint64_t)clusters_to_test);
+		
+	memcpy(desired_clone_buffer, desired_snapshot_1_buffer, payload_size);
+	CU_ASSERT(check_blob_buffer(blob, channel, payload_size, pages_per_payload, work_buffer, desired_blob_buffer));
+	CU_ASSERT(check_blob_buffer(snapshot, channel, payload_size, pages_per_payload, work_buffer, desired_snapshot_1_buffer));
+	CU_ASSERT(check_blob_buffer(clone, channel, payload_size, pages_per_payload, work_buffer, desired_clone_buffer));
+
+	/* Fill clone's 3rd page with 0xC */
+	memset(desired_clone_buffer + 	2 * page_size, 0xC, page_size);
+	memset(work_buffer + 			2 * page_size, 0xC, page_size);
+	spdk_blob_io_write(clone, channel, work_buffer + (2 *  page_size), 2, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	/* Make sure persistant storage is corrcet */
+	CU_ASSERT(check_blob_buffer(blob, channel, payload_size, pages_per_payload, work_buffer, desired_blob_buffer));
+	CU_ASSERT(check_blob_buffer(snapshot, channel, payload_size, pages_per_payload, work_buffer, desired_snapshot_1_buffer));
+	CU_ASSERT(check_blob_buffer(clone, channel, payload_size, pages_per_payload, work_buffer, desired_clone_buffer));
+
+	/* Create second snapshot from blob */
+	spdk_bs_create_snapshot(bs, blobid, NULL, blob_op_with_id_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(g_blobid != SPDK_BLOBID_INVALID);
+	snapshot2id = g_blobid;
+
+	spdk_bs_open_blob(bs, snapshot2id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	snapshot2 = g_blob;
+	CU_ASSERT(snapshot2->data_ro == true);
+	CU_ASSERT(snapshot2->md_ro == true);
+	CU_ASSERT(spdk_blob_get_num_clusters(snapshot) == (uint64_t)clusters_to_test);
+
+	memcpy(desired_snapshot_2_buffer, desired_blob_buffer, payload_size);
+	CU_ASSERT(check_blob_buffer(blob, channel, payload_size, pages_per_payload, work_buffer, desired_blob_buffer));
+	CU_ASSERT(check_blob_buffer(snapshot, channel, payload_size, pages_per_payload, work_buffer, desired_snapshot_1_buffer));
+	CU_ASSERT(check_blob_buffer(clone, channel, payload_size, pages_per_payload, work_buffer, desired_clone_buffer));
+	CU_ASSERT(check_blob_buffer(snapshot2, channel, payload_size, pages_per_payload, work_buffer, desired_snapshot_2_buffer));
+	
+	/* Close all blobs */
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+
+	spdk_blob_close(snapshot2, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+
+	spdk_blob_close(clone, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+
+	spdk_blob_close(snapshot, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+
+	ut_bs_reload(&bs, NULL);
+	//open all blobs
+	spdk_bs_open_blob(bs, blobid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	blob = g_blob;
+
+	spdk_bs_open_blob(bs, snapshotid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	snapshot = g_blob;
+
+	spdk_bs_open_blob(bs, cloneid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	clone = g_blob;
+
+	spdk_bs_open_blob(bs, snapshot2id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	snapshot2 = g_blob;
+	
+	//validate data
+	CU_ASSERT(check_blob_buffer(blob, channel, payload_size, pages_per_payload, work_buffer, desired_blob_buffer));
+	CU_ASSERT(check_blob_buffer(snapshot, channel, payload_size, pages_per_payload, work_buffer, desired_snapshot_1_buffer));
+	CU_ASSERT(check_blob_buffer(clone, channel, payload_size, pages_per_payload, work_buffer, desired_clone_buffer));
+	CU_ASSERT(check_blob_buffer(snapshot2, channel, payload_size, pages_per_payload, work_buffer, desired_snapshot_2_buffer));
+	
+	/* Close and delete all blobs */
+	ut_blob_close_and_delete(bs, snapshot2);
+	ut_blob_close_and_delete(bs, clone);
+	ut_blob_close_and_delete(bs, snapshot);
+	ut_blob_close_and_delete(bs, blob);
+
+	//clear buffers
+	memset(g_back_dev_buffer, 0, payload_size);
+	memset(g_dev_buffer, 0, payload_size);
+
+	spdk_bs_free_io_channel(channel);
+	poll_threads();
+
+	free(desired_snapshot_2_buffer);
+	free(desired_clone_buffer);
+	free(desired_snapshot_1_buffer);
+	free(desired_blob_buffer);
+	free(work_buffer);	
+}
+
 static void
 suite_blob_setup(void)
 {
@@ -7616,6 +7877,9 @@ int main(int argc, char **argv)
 			suite_bs_setup, suite_bs_cleanup);
 	suite_blob = CU_add_suite_with_setup_and_teardown("blob_blob", NULL, NULL,
 			suite_blob_setup, suite_blob_cleanup);
+
+	suite_hybrid_bd = CU_add_suite_with_setup_and_teardown("suite_hybrid_bd", NULL, 
+				NULL, suite_bs_setup, suite_bs_cleanup);
 
 	CU_ADD_TEST(suite, blob_init);
 	CU_ADD_TEST(suite_bs, blob_open);
@@ -7705,7 +7969,10 @@ int main(int argc, char **argv)
 		g_use_extent_table = true;
 		CU_basic_run_tests();
 		num_failures += CU_get_number_of_failures();
-
+		
+		if (!g_test_hybrid_bs) {
+			CU_ADD_TEST(suite_hybrid_bd, ut_hybrid_bs);
+		}
 		g_test_hybrid_bs = !g_test_hybrid_bs;
 	}
 
