@@ -121,6 +121,7 @@ blob_bs_dev_destroy(struct spdk_bs_dev *bs_dev)
 	spdk_blob_close(b->blob, blob_bs_dev_destroy_cpl, b);
 }
 
+struct spdk_thread *spdk_get_thread(void);
 static struct spdk_bs_dev *
 blob_bs_dev_clone(struct spdk_bs_dev *bs_dev)
 {

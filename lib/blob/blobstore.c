@@ -2462,7 +2462,9 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	uint32_t cluster_start_page;
 	uint32_t cluster_number;
 	int rc;
-
+	//Copy is required if either there's a blob underlying this blob or the bs 
+	//	iteslf is supported by a backing dev
+	bool should_copy = (blob->parent_id != SPDK_BLOBID_INVALID || NULL != blob->bs->back_dev);
 	ch = spdk_io_channel_get_ctx(_ch);
 
 	if (!TAILQ_EMPTY(&ch->need_cluster_alloc)) {
@@ -2491,7 +2493,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	ctx->blob = blob;
 	ctx->page = cluster_start_page;
 
-	if (blob->parent_id != SPDK_BLOBID_INVALID) {
+	if (should_copy) {
 		ctx->buf = spdk_malloc(blob->bs->cluster_sz, blob->back_bs_dev->blocklen,
 				       NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
 		if (!ctx->buf) {
@@ -2532,7 +2534,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	/* Queue the user op to block other incoming operations */
 	TAILQ_INSERT_TAIL(&ch->need_cluster_alloc, op, link);
 
-	if (blob->parent_id != SPDK_BLOBID_INVALID) {
+	if (should_copy) {
 		/* Read cluster from backing device */
 		bs_sequence_read_bs_dev(ctx->seq, blob->back_bs_dev, _ch, ctx->buf,
 					bs_dev_page_to_lba(blob->back_bs_dev, cluster_start_page),
@@ -4522,7 +4524,9 @@ bs_parse_super(struct spdk_bs_load_ctx *ctx)
 	ctx->bs->total_data_clusters = ctx->bs->total_clusters;
 	if (ctx->bs->md_dev == NULL) {
 		ctx->bs->total_data_clusters -= spdk_divide_round_up(
-				ctx->bs->md_start + ctx->bs->md_len, ctx->bs->pages_per_cluster);
+			ctx->bs->md_start + ctx->bs->md_len, ctx->bs->pages_per_cluster);
+	} else {
+		ctx->bs->total_data_clusters -= 1;
 	}
 	ctx->bs->super_blob = ctx->super->super_blob;
 	memcpy(&ctx->bs->bstype, &ctx->super->bstype, sizeof(ctx->super->bstype));
@@ -4642,9 +4646,16 @@ _spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 
 	SPDK_DEBUGLOG(blob, "Loading blobstore from dev %p\n", dev);
 
-	if ((SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) {
+	if (((NULL == md_dev) && (SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) ||
+		((NULL != md_dev) && (SPDK_BS_PAGE_SIZE % md_dev->blocklen) != 0)) {
 		SPDK_DEBUGLOG(blob, "unsupported dev block length of %d\n", dev->blocklen);
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}		
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
 	}
@@ -4658,6 +4669,12 @@ _spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 
 	if (opts.max_md_ops == 0 || opts.max_channel_ops == 0) {
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}	
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
 	}
@@ -4665,6 +4682,12 @@ _spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 	err = bs_alloc(dev, md_dev, back_dev, &opts, &bs, &ctx);
 	if (err) {
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, err);
 		return;
 	}
@@ -5128,13 +5151,17 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 	uint64_t		lba, lba_count;
 
 	SPDK_DEBUGLOG(blob, "Initializing blobstore on dev %p\n", dev);
-
-	if ((SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) {
+	if (((NULL == md_dev) && (SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) ||
+		((NULL != md_dev) && (SPDK_BS_PAGE_SIZE % md_dev->blocklen) != 0)) {
 		SPDK_ERRLOG("unsupported dev block length of %d\n",
 			    dev->blocklen);
 		dev->destroy(dev);
-		if (md_dev != NULL)
+		if (md_dev != NULL) {
 			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
 	}
@@ -5148,8 +5175,12 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 
 	if (bs_opts_verify(&opts) != 0) {
 		dev->destroy(dev);
-		if (md_dev != NULL)
+		if (md_dev != NULL) {
 			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
 	}
@@ -5158,6 +5189,9 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 		if (bs_opts_verify_md(&opts) != 0) {
 			dev->destroy(dev);
 			md_dev->destroy(md_dev);
+			if (back_dev != NULL) {
+				back_dev->destroy(back_dev);
+			}
 			cb_fn(cb_arg, NULL, -EINVAL);
 			return;
 		}
@@ -5166,8 +5200,12 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 	rc = bs_alloc(dev, md_dev, back_dev, &opts, &bs, &ctx);
 	if (rc) {
 		dev->destroy(dev);
-		if (md_dev != NULL)
+		if (md_dev != NULL) {
 			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, rc);
 		return;
 	}

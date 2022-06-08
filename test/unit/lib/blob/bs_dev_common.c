@@ -38,9 +38,17 @@
 #define DEV_BUFFER_SIZE (64 * 1024 * 1024)
 #define DEV_BUFFER_BLOCKLEN (4096)
 #define DEV_BUFFER_BLOCKCNT (DEV_BUFFER_SIZE / DEV_BUFFER_BLOCKLEN)
+
 uint8_t *g_dev_buffer;
 uint64_t g_dev_write_bytes;
 uint64_t g_dev_read_bytes;
+
+//TODO - would be nice to manage this in a ds
+uint8_t *g_md_dev_buffer;
+uint8_t *g_back_dev_buffer;
+struct spdk_bs_dev *g_md_dev = NULL;
+struct spdk_bs_dev *g_back_dev = NULL;
+uint64_t g_back_dev_read_bytes;
 
 struct spdk_power_failure_counters {
 	uint64_t general_counter;
@@ -66,6 +74,7 @@ static struct spdk_power_failure_thresholds g_power_failure_thresholds = {};
 
 static uint64_t g_power_failure_rc;
 
+static uint8_t* dev_to_dev_buffer(struct spdk_bs_dev * dev);
 void dev_reset_power_failure_event(void);
 void dev_reset_power_failure_counters(void);
 void dev_set_power_failure_thresholds(struct spdk_power_failure_thresholds thresholds);
@@ -134,6 +143,11 @@ dev_complete(void *arg)
 	_bs_send_msg(dev_complete_cb, arg, NULL);
 }
 
+static
+bool is_back_dev(struct spdk_bs_dev * dev)
+{
+	return (dev == g_back_dev || NULL != dev->clone);
+}
 static void
 dev_read(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, void *payload,
 	 uint64_t lba, uint32_t lba_count,
@@ -158,8 +172,14 @@ dev_read(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, void *payload
 		SPDK_CU_ASSERT_FATAL(offset + length <= DEV_BUFFER_SIZE);
 
 		if (length > 0) {
-			memcpy(payload, &g_dev_buffer[offset], length);
-			g_dev_read_bytes += length;
+			memcpy(payload, &((dev_to_dev_buffer(dev))[offset]), length);
+			
+			//Bytes read from the backing_dev should be counted seperately
+			if (is_back_dev(dev)) {
+				g_back_dev_read_bytes += length;
+			} else {
+				g_dev_read_bytes += length;
+			}
 		}
 	} else {
 		g_power_failure_rc = -EIO;
@@ -191,7 +211,8 @@ dev_write(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, void *payloa
 		length = lba_count * dev->blocklen;
 		SPDK_CU_ASSERT_FATAL(offset + length <= DEV_BUFFER_SIZE);
 
-		memcpy(&g_dev_buffer[offset], payload, length);
+		memcpy(&((dev_to_dev_buffer(dev))[offset]), payload, length);
+		
 		g_dev_write_bytes += length;
 	} else {
 		g_power_failure_rc = -EIO;
@@ -239,11 +260,18 @@ dev_readv(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 		__check_iov(iov, iovcnt, length);
 
 		for (i = 0; i < iovcnt; i++) {
-			memcpy(iov[i].iov_base, &g_dev_buffer[offset], iov[i].iov_len);
+			//memcpy(iov[i].iov_base, &g_dev_buffer[offset], iov[i].iov_len);
+			memcpy(iov[i].iov_base, &((dev_to_dev_buffer(dev))[offset]), iov[i].iov_len);
+			
 			offset += iov[i].iov_len;
 		}
 
-		g_dev_read_bytes += length;
+		//Bytes read from the backing_dev should be counted seperately
+		if (is_back_dev(dev)) {
+			g_back_dev_read_bytes += length;
+		} else {
+			g_dev_read_bytes += length;
+		}
 	} else {
 		g_power_failure_rc = -EIO;
 	}
@@ -277,8 +305,9 @@ dev_writev(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 		SPDK_CU_ASSERT_FATAL(offset + length <= DEV_BUFFER_SIZE);
 		__check_iov(iov, iovcnt, length);
 
-		for (i = 0; i < iovcnt; i++) {
-			memcpy(&g_dev_buffer[offset], iov[i].iov_base, iov[i].iov_len);
+		for (i = 0; i < iovcnt; i++) {			
+			//memcpy(&g_dev_buffer[offset], iov[i].iov_base, iov[i].iov_len);
+			memcpy(&((dev_to_dev_buffer(dev))[offset]), iov[i].iov_base, iov[i].iov_len);
 			offset += iov[i].iov_len;
 		}
 
@@ -334,7 +363,8 @@ dev_unmap(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 		offset = lba * dev->blocklen;
 		length = lba_count * dev->blocklen;
 		SPDK_CU_ASSERT_FATAL(offset + length <= DEV_BUFFER_SIZE);
-		memset(&g_dev_buffer[offset], 0, length);
+		//memset(&g_dev_buffer[offset], 0, length);
+		memset(&((dev_to_dev_buffer(dev))[offset]), 0, length);		
 	} else {
 		g_power_failure_rc = -EIO;
 	}
@@ -364,7 +394,9 @@ dev_write_zeroes(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 		offset = lba * dev->blocklen;
 		length = lba_count * dev->blocklen;
 		SPDK_CU_ASSERT_FATAL(offset + length <= DEV_BUFFER_SIZE);
-		memset(&g_dev_buffer[offset], 0, length);
+		//memset(&g_dev_buffer[offset], 0, length);
+		memset(&((dev_to_dev_buffer(dev))[offset]), 0, length);
+		
 		g_dev_write_bytes += length;
 	} else {
 		g_power_failure_rc = -EIO;
@@ -394,4 +426,40 @@ init_dev(void)
 	dev->blocklen = DEV_BUFFER_BLOCKLEN;
 
 	return dev;
+}
+static struct spdk_bs_dev *
+clone_dev(struct spdk_bs_dev *bs_dev)
+{
+	struct spdk_bs_dev *dev = calloc(1, sizeof(*dev));
+
+	SPDK_CU_ASSERT_FATAL(dev != NULL);
+
+	dev->create_channel = dev_create_channel;
+	dev->destroy_channel = dev_destroy_channel;
+	dev->destroy = dev_destroy;
+	dev->read = dev_read;
+	dev->write = dev_write;
+	dev->readv = dev_readv;
+	dev->writev = dev_writev;
+	dev->flush = dev_flush;
+	dev->unmap = dev_unmap;
+	dev->write_zeroes = dev_write_zeroes;
+	
+	dev->blockcnt 	= bs_dev->blockcnt;
+	dev->blocklen 	= bs_dev->blocklen;
+	dev->clone		= bs_dev->clone;
+	return dev;
+}
+static
+uint8_t* dev_to_dev_buffer(struct spdk_bs_dev * dev)
+{
+	if (NULL != dev) {
+		if (dev == g_md_dev) {
+			return g_md_dev_buffer;
+		} else if (is_back_dev(dev)) {
+			return g_back_dev_buffer;
+		}
+		return g_dev_buffer;
+	}
+	return NULL;	
 }
