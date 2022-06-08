@@ -2462,7 +2462,9 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	uint32_t cluster_start_page;
 	uint32_t cluster_number;
 	int rc;
-
+	//Copy is required if either there's a blob underlying this blob or the bs 
+	//	iteslf is supported by a backing dev
+	bool should_copy = (blob->parent_id != SPDK_BLOBID_INVALID || NULL != blob->bs->back_dev);
 	ch = spdk_io_channel_get_ctx(_ch);
 
 	if (!TAILQ_EMPTY(&ch->need_cluster_alloc)) {
@@ -2491,7 +2493,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	ctx->blob = blob;
 	ctx->page = cluster_start_page;
 
-	if (blob->parent_id != SPDK_BLOBID_INVALID) {
+	if (should_copy) {
 		ctx->buf = spdk_malloc(blob->bs->cluster_sz, blob->back_bs_dev->blocklen,
 				       NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
 		if (!ctx->buf) {
@@ -2532,7 +2534,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	/* Queue the user op to block other incoming operations */
 	TAILQ_INSERT_TAIL(&ch->need_cluster_alloc, op, link);
 
-	if (blob->parent_id != SPDK_BLOBID_INVALID) {
+	if (should_copy) {
 		/* Read cluster from backing device */
 		bs_sequence_read_bs_dev(ctx->seq, blob->back_bs_dev, _ch, ctx->buf,
 					bs_dev_page_to_lba(blob->back_bs_dev, cluster_start_page),
