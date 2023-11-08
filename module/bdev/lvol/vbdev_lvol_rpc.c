@@ -150,7 +150,7 @@ rpc_bdev_lvol_create_lvstore(struct spdk_jsonrpc_request *request,
 			goto cleanup;
 		}
 	} else {
-		clear_method = LVS_CLEAR_WITH_UNMAP;
+		clear_method = (req.md_bdev_name != NULL) ? LVS_CLEAR_WITH_NONE : LVS_CLEAR_WITH_UNMAP;
 	}
 	if (req.md_bdev_name != NULL) {
 		rc = vbdev_lvs_create_with_md(req.bdev_name, req.md_bdev_name, req.back_bdev_name, req.lvs_name, req.cluster_sz, clear_method,

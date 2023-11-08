@@ -1648,8 +1648,16 @@ static void
 bs_batch_clear_dev(struct spdk_blob_persist_ctx *ctx, spdk_bs_batch_t *batch, uint64_t lba,
 		   uint64_t lba_count)
 {
-	switch (ctx->blob->clear_method) {
-	case BLOB_CLEAR_WITH_DEFAULT:
+	enum blob_clear_method clear_method = ctx->blob->clear_method;
+
+	/* Clearing device for blobstore with separate metadata device is not supported. */
+	if (clear_method == BLOB_CLEAR_WITH_DEFAULT) {
+		clear_method = (ctx->blob->bs->md_dev != NULL) ? BLOB_CLEAR_WITH_NONE : BLOB_CLEAR_WITH_UNMAP;
+	}
+
+	assert(ctx->blob->bs->md_dev == NULL || clear_method == BLOB_CLEAR_WITH_NONE);
+
+	switch (clear_method) {
 	case BLOB_CLEAR_WITH_UNMAP:
 		bs_batch_unmap_dev(batch, lba, lba_count);
 		break;
@@ -2454,7 +2462,9 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	uint32_t cluster_start_page;
 	uint32_t cluster_number;
 	int rc;
-
+	//Copy is required if either there's a blob underlying this blob or the bs 
+	//	iteslf is supported by a backing dev
+	bool should_copy = (blob->parent_id != SPDK_BLOBID_INVALID || NULL != blob->bs->back_dev);
 	ch = spdk_io_channel_get_ctx(_ch);
 
 	if (!TAILQ_EMPTY(&ch->need_cluster_alloc)) {
@@ -2483,7 +2493,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	ctx->blob = blob;
 	ctx->page = cluster_start_page;
 
-	if (blob->parent_id != SPDK_BLOBID_INVALID) {
+	if (should_copy) {
 		ctx->buf = spdk_malloc(blob->bs->cluster_sz, blob->back_bs_dev->blocklen,
 				       NULL, SPDK_ENV_SOCKET_ID_ANY, SPDK_MALLOC_DMA);
 		if (!ctx->buf) {
@@ -2524,7 +2534,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	/* Queue the user op to block other incoming operations */
 	TAILQ_INSERT_TAIL(&ch->need_cluster_alloc, op, link);
 
-	if (blob->parent_id != SPDK_BLOBID_INVALID) {
+	if (should_copy) {
 		/* Read cluster from backing device */
 		bs_sequence_read_bs_dev(ctx->seq, blob->back_bs_dev, _ch, ctx->buf,
 					bs_dev_page_to_lba(blob->back_bs_dev, cluster_start_page),
@@ -3408,6 +3418,17 @@ bs_opts_verify(struct spdk_bs_opts *opts)
 	return 0;
 }
 
+static int
+bs_opts_verify_md(struct spdk_bs_opts *opts)
+{
+	if (opts->clear_method != BS_CLEAR_WITH_NONE) {
+		SPDK_ERRLOG("Blobstore clear methods unmap and write zeroes are incompatible with separate metadata device use\n");
+		return -1;
+	}
+
+	return 0;
+}
+
 /* START spdk_bs_load */
 
 /* spdk_bs_load_ctx is used for init, load, unload and dump code paths. */
@@ -3509,41 +3530,6 @@ bs_alloc(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_bs_dev
 		free(ctx);
 		free(bs);
 		return -ENOMEM;
-	}
-
-	if (md_dev) {	// We can fixup the math in the future, as there are overheads
-		uint64_t md_dev_size;
-		uint64_t md_length_pages;
-		uint64_t total_md_length_pages;
-		if (opts->num_md_pages == SPDK_BLOB_OPTS_NUM_MD_PAGES) {
-			total_md_length_pages = md_length_pages = bs->total_clusters;
-		} else {
-			total_md_length_pages = md_length_pages = opts->num_md_pages;
-		}
-		
-		// Add page_mask_len * 2 (blobid_mask_len is the exact same size)
-		total_md_length_pages += 2*spdk_divide_round_up(sizeof(struct spdk_bs_md_mask) +
-					   spdk_divide_round_up(md_length_pages, 8), SPDK_BS_PAGE_SIZE);
-		// Add super block
-		total_md_length_pages += 1;
-		// Add cluster_mask_len
-		total_md_length_pages += spdk_divide_round_up(sizeof(struct spdk_bs_md_mask) +
-					 spdk_divide_round_up(bs->total_clusters, 8), SPDK_BS_PAGE_SIZE);
-
-		md_dev_size = md_dev->blocklen * dev->blockcnt;
-		if (spdk_divide_round_up(md_dev_size, SPDK_BS_PAGE_SIZE) < total_md_length_pages) {
-			// MD Device size cannot be smaller than required md size for blobstore
-			SPDK_INFOLOG(blob, "MD Device size %" PRIu64 " is smaller than required size %" PRIu64 "\n",
-				     md_dev_size, total_md_length_pages*SPDK_BS_PAGE_SIZE);
-			spdk_free(ctx->super);
-			free(ctx);
-			free(bs);
-			return -ENOSPC;
-		}
-		if (spdk_divide_round_up(md_dev_size, SPDK_BS_PAGE_SIZE) - total_md_length_pages > 0) {
-			SPDK_ERRLOG("MD DEV has %" PRIu64 " more blocks than necessary", spdk_divide_round_up(md_dev_size, SPDK_BS_PAGE_SIZE) - total_md_length_pages);
-		}
-		bs->md_len = md_length_pages;
 	}
 
 	bs->pages_per_cluster = bs->cluster_sz / SPDK_BS_PAGE_SIZE;
@@ -4535,8 +4521,13 @@ bs_parse_super(struct spdk_bs_load_ctx *ctx)
 		return -ENOMEM;
 	}
 
-	ctx->bs->total_data_clusters = ctx->bs->total_clusters - spdk_divide_round_up(
-					       ctx->bs->md_start + ctx->bs->md_len, ctx->bs->pages_per_cluster);
+	ctx->bs->total_data_clusters = ctx->bs->total_clusters;
+	if (ctx->bs->md_dev == NULL) {
+		ctx->bs->total_data_clusters -= spdk_divide_round_up(
+			ctx->bs->md_start + ctx->bs->md_len, ctx->bs->pages_per_cluster);
+	} else {
+		ctx->bs->total_data_clusters -= 1;
+	}
 	ctx->bs->super_blob = ctx->super->super_blob;
 	memcpy(&ctx->bs->bstype, &ctx->super->bstype, sizeof(ctx->super->bstype));
 
@@ -4655,9 +4646,16 @@ _spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 
 	SPDK_DEBUGLOG(blob, "Loading blobstore from dev %p\n", dev);
 
-	if ((SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) {
+	if (((NULL == md_dev) && (SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) ||
+		((NULL != md_dev) && (SPDK_BS_PAGE_SIZE % md_dev->blocklen) != 0)) {
 		SPDK_DEBUGLOG(blob, "unsupported dev block length of %d\n", dev->blocklen);
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}		
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
 	}
@@ -4671,6 +4669,12 @@ _spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 
 	if (opts.max_md_ops == 0 || opts.max_channel_ops == 0) {
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}	
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
 	}
@@ -4678,6 +4682,12 @@ _spdk_bs_load(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 	err = bs_alloc(dev, md_dev, back_dev, &opts, &bs, &ctx);
 	if (err) {
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, err);
 		return;
 	}
@@ -5141,11 +5151,17 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 	uint64_t		lba, lba_count;
 
 	SPDK_DEBUGLOG(blob, "Initializing blobstore on dev %p\n", dev);
-
-	if ((SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) {
+	if (((NULL == md_dev) && (SPDK_BS_PAGE_SIZE % dev->blocklen) != 0) ||
+		((NULL != md_dev) && (SPDK_BS_PAGE_SIZE % md_dev->blocklen) != 0)) {
 		SPDK_ERRLOG("unsupported dev block length of %d\n",
 			    dev->blocklen);
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
 	}
@@ -5159,28 +5175,51 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 
 	if (bs_opts_verify(&opts) != 0) {
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, -EINVAL);
 		return;
+	}
+
+	if (md_dev != NULL) {
+		if (bs_opts_verify_md(&opts) != 0) {
+			dev->destroy(dev);
+			md_dev->destroy(md_dev);
+			if (back_dev != NULL) {
+				back_dev->destroy(back_dev);
+			}
+			cb_fn(cb_arg, NULL, -EINVAL);
+			return;
+		}
 	}
 
 	rc = bs_alloc(dev, md_dev, back_dev, &opts, &bs, &ctx);
 	if (rc) {
 		dev->destroy(dev);
+		if (md_dev != NULL) {
+			md_dev->destroy(md_dev);
+		}
+		if (back_dev != NULL) {
+			back_dev->destroy(back_dev);
+		}
 		cb_fn(cb_arg, NULL, rc);
 		return;
 	}
-	if (!md_dev) { // MD len set in alloc
-		if (opts.num_md_pages == SPDK_BLOB_OPTS_NUM_MD_PAGES) {
-			/* By default, allocate 1 page per cluster.
-			 * Technically, this over-allocates metadata
-			 * because more metadata will reduce the number
-			 * of usable clusters. This can be addressed with
-			 * more complex math in the future.
-			 */
-			bs->md_len = bs->total_clusters;
-		} else {
-			bs->md_len = opts.num_md_pages;
-		}
+
+	if (opts.num_md_pages == SPDK_BLOB_OPTS_NUM_MD_PAGES) {
+		/* By default, allocate 1 page per cluster.
+		 * Technically, this over-allocates metadata
+		 * because more metadata will reduce the number
+		 * of usable clusters. This can be addressed with
+		 * more complex math in the future.
+		 */
+		bs->md_len = bs->total_clusters;
+	} else {
+		bs->md_len = opts.num_md_pages;
 	}
 	rc = spdk_bit_array_resize(&bs->used_md_pages, bs->md_len);
 	if (rc < 0) {
@@ -5276,12 +5315,30 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 			cb_fn(cb_arg, NULL, -ENOMEM);
 			return;
 		}
-		/* Claim all of the clusters used by the metadata */
-		for (i = 0; i < num_md_clusters; i++) {
-			spdk_bit_array_set(ctx->used_clusters, i);
+	} else 	{
+		uint64_t md_dev_size = md_dev->blocklen * md_dev->blockcnt;
+		if (md_dev_size < num_md_pages * SPDK_BS_PAGE_SIZE) {
+			SPDK_ERRLOG("MD Device size %" PRIu64 " is smaller than required size %" PRIu64 "\n",
+				     md_dev_size, num_md_pages * SPDK_BS_PAGE_SIZE);
+			spdk_free(ctx->super);
+			spdk_bit_array_free(&ctx->used_clusters);
+			free(ctx);
+			bs_free(bs);
+			cb_fn(cb_arg, NULL, -ENOMEM);
+			return;
+		} else if (md_dev->blockcnt > num_md_pages * (SPDK_BS_PAGE_SIZE / md_dev->blocklen)) {
+			SPDK_WARNLOG("MD DEV has %" PRIu64 " more blocks than necessary\n", md_dev->blockcnt - num_md_pages * (SPDK_BS_PAGE_SIZE / md_dev->blocklen));
 		}
-		bs->num_free_clusters -= num_md_clusters;
+		/* Give up cluster 0, its index is reserved */
+		num_md_clusters = 1;
 	}
+
+	/* Claim all of the clusters used by the metadata */
+	for (i = 0; i < num_md_clusters; i++) {
+		spdk_bit_array_set(ctx->used_clusters, i);
+	}
+
+	bs->num_free_clusters -= num_md_clusters;
 	bs->total_data_clusters = bs->num_free_clusters;
 
 	cpl.type = SPDK_BS_CPL_TYPE_BS_HANDLE;
@@ -5301,32 +5358,19 @@ _spdk_bs_init(struct spdk_bs_dev *dev, struct spdk_bs_dev *md_dev, struct spdk_b
 	batch = bs_sequence_to_batch(seq, bs_init_trim_cpl, ctx);
 
 	/* Clear metadata space */
-	if (md_dev) {	// Clear entire MD device
+	bs_batch_write_zeroes_dev(batch, 0, num_md_lba);
 
-	} else {
-		bs_batch_write_zeroes_dev(batch, 0, num_md_lba);
-	}
-
+	/* Clear data space */
 	lba = num_md_lba;
 	lba_count = ctx->bs->dev->blockcnt - lba;
 	switch (opts.clear_method) {
 	case BS_CLEAR_WITH_UNMAP:
 		/* Trim data clusters */
-		if (!md_dev) {
-			bs_batch_unmap_dev(batch, lba, lba_count);
-		} else {
-			// Do not use MD channel
-			bs_batch_unmap_dev(batch, 0, ctx->bs->dev->blockcnt);
-		}
+		bs_batch_unmap_dev(batch, lba, lba_count);
 		break;
 	case BS_CLEAR_WITH_WRITE_ZEROES:
 		/* Write_zeroes to data clusters */
-		if (!md_dev) {
-			bs_batch_write_zeroes_dev(batch, lba, lba_count);
-		} else {
-			// Do not use MD channel
-			bs_batch_write_zeroes_dev(batch, 0, ctx->bs->dev->blockcnt);
-		}
+		bs_batch_write_zeroes_dev(batch, lba, lba_count);
 		break;
 	case BS_CLEAR_WITH_NONE:
 	default:
@@ -5827,6 +5871,12 @@ bs_create_blob(struct spdk_blob_store *bs,
 	int rc;
 
 	assert(spdk_get_thread() == bs->md_thread);
+
+	if ((bs->md_dev != NULL) && (opts != NULL) && !(opts->clear_method == BLOB_CLEAR_WITH_DEFAULT || opts->clear_method == BLOB_CLEAR_WITH_NONE)) {
+		SPDK_NOTICELOG("Blob clear methods unmap and write zeroes are incompatible with separate metadata device use");
+		cb_fn(cb_arg, 0, -ENOMEM);
+		return;
+	}
 
 	page_idx = spdk_bit_array_find_first_clear(bs->used_md_pages, 0);
 	if (page_idx == UINT32_MAX) {
